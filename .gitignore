@@ -1,0 +1,14 @@
+# User and documentation files
+CLAUDE.md
+docs/
+.claude/
+
+# Xcode & Apple build artifacts
+*.xcuserstate
+project.xcworkspace
+xcuserdata/
+DerivedData/
+build/
+.DS_Store
+*.swp
+*~
