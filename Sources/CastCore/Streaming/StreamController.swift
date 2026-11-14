@@ -14,7 +14,7 @@ public actor StreamController {
         self.server = HTTPServer(port: port)
         self.patternGenerator = TestPatternGenerator()
         self.packetizer = MPEGTSPacketizer()
-        self.segmenter = HLSSegmenter(targetDuration: 1, windowSize: 5)
+        self.segmenter = HLSSegmenter(targetDuration: 1, windowSize: 10)
     }
 
     public func setHostedMedia(name: String, data: Data) {
@@ -29,7 +29,7 @@ public actor StreamController {
         guard !isStreaming else { return serverPort }
 
         // Populate initial rolling HLS segments
-        for i in 0..<3 {
+        for i in 0..<5 {
             appendSegment(pts: UInt64(i * 90000))
         }
 
@@ -74,14 +74,13 @@ public actor StreamController {
         }
 
         // Fallback handler for .ts segments and /media/ byte-range requests
-        await server.setFallbackHandler { [weak self] request in
-            guard let self = self else { return HTTPResponse.notFound() }
+        await server.setFallbackHandler { request in
             let path = request.path.components(separatedBy: "?").first ?? request.path
 
-            // Handle .ts segments
+            // Handle .ts segments directly via thread-safe segmenter
             if path.hasSuffix(".ts") {
                 let segmentName = path.components(separatedBy: "/").last ?? path
-                if let data = await self.getSegmentData(name: segmentName) {
+                if let data = hlsSegmenter.getSegment(name: segmentName) {
                     return HTTPResponse(
                         statusCode: 200,
                         statusText: "OK",
@@ -93,11 +92,6 @@ public actor StreamController {
                         body: data
                     )
                 }
-            }
-
-            // Mode 3: Byte-range HTTP media file server
-            if path.hasPrefix("/media/") {
-                return await self.handleMediaRequest(request: request)
             }
 
             return HTTPResponse.notFound()
@@ -123,7 +117,7 @@ public actor StreamController {
 
     private func startLiveHLSLoop() {
         liveSegmentTask = Task.detached { [weak self] in
-            var currentPts: UInt64 = 270000
+            var currentPts: UInt64 = 450000
             while true {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self = self else { break }
@@ -134,31 +128,6 @@ public actor StreamController {
                 currentPts += 90000
             }
         }
-    }
-
-    private func handleMediaRequest(request: HTTPRequest) -> HTTPResponse {
-        let mediaName = request.path.components(separatedBy: "/media/").last?.components(separatedBy: "?").first ?? ""
-        guard let data = hostedMedia[mediaName] else {
-            return HTTPResponse.notFound()
-        }
-
-        if let rangeHeader = request.headers["range"] ?? request.headers["Range"],
-           let range = ByteRangeParser.parse(header: rangeHeader, totalSize: data.count) {
-            let subdata = data.subdata(in: range.start..<(range.end + 1))
-            return HTTPResponse(
-                statusCode: 206,
-                statusText: "Partial Content",
-                headers: [
-                    "Content-Type": "video/mp4",
-                    "Content-Range": range.contentRangeHeader(total: data.count),
-                    "Content-Length": "\(subdata.count)",
-                    "Accept-Ranges": "bytes"
-                ],
-                body: subdata
-            )
-        }
-
-        return HTTPResponse.ok(data: data, contentType: "video/mp4")
     }
 
     public func stop() async {
