@@ -8,7 +8,8 @@ let package = Package(
         .macOS(.v13)
     ],
     products: [
-        .library(name: "CastCore", targets: ["CastCore"])
+        .library(name: "CastCore", targets: ["CastCore"]),
+        .executable(name: "CastLiteServer", targets: ["CastLiteServer"])
     ],
     dependencies: [],
     targets: [
@@ -16,6 +17,11 @@ let package = Package(
             name: "CastCore",
             dependencies: [],
             path: "Sources/CastCore"
+        ),
+        .executableTarget(
+            name: "CastLiteServer",
+            dependencies: ["CastCore"],
+            path: "Sources/CastLiteServer"
         ),
         .testTarget(
             name: "CastCoreTests",
