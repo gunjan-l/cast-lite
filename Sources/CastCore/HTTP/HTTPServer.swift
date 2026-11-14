@@ -13,6 +13,7 @@ public actor HTTPServer {
     private var listeningSocket: Int32 = -1
     private var isRunning: Bool = false
     private var routes: [String: RouteHandler] = [:]
+    private var fallbackHandler: RouteHandler?
     private var acceptTask: Task<Void, Never>?
 
     public init(port: UInt16 = 8080) {
@@ -21,6 +22,10 @@ public actor HTTPServer {
 
     public func registerRoute(path: String, handler: @escaping RouteHandler) {
         routes[path] = handler
+    }
+
+    public func setFallbackHandler(_ handler: @escaping RouteHandler) {
+        self.fallbackHandler = handler
     }
 
     public func start() throws -> UInt16 {
@@ -96,24 +101,25 @@ public actor HTTPServer {
     }
 
     private func startAcceptLoop() {
+        let sock = listeningSocket
         acceptTask = Task.detached { [weak self] in
             while true {
-                guard let self = self else { break }
-                let currentSocket = await self.getListeningSocket()
-                guard currentSocket >= 0 else { break }
-
                 var clientAddr = sockaddr_in()
                 var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
                 let clientSock = withUnsafeMutablePointer(to: &clientAddr) { ptr in
                     ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                        accept(currentSocket, saPtr, &clientLen)
+                        accept(sock, saPtr, &clientLen)
                     }
                 }
 
                 if clientSock < 0 {
-                    let stillRunning = await self.getIsRunning()
-                    if !stillRunning { break }
+                    guard let self = self, await self.isActive() else { break }
                     continue
+                }
+
+                guard let self = self else {
+                    close(clientSock)
+                    break
                 }
 
                 Task.detached {
@@ -123,12 +129,8 @@ public actor HTTPServer {
         }
     }
 
-    private func getListeningSocket() -> Int32 {
-        return listeningSocket
-    }
-
-    private func getIsRunning() -> Bool {
-        return isRunning
+    private func isActive() -> Bool {
+        return isRunning && listeningSocket >= 0
     }
 
     private func handleClient(socket: Int32) async {
@@ -152,6 +154,8 @@ public actor HTTPServer {
         let response: HTTPResponse
         if let handler = routes[cleanPath] {
             response = await handler(request)
+        } else if let fallback = fallbackHandler {
+            response = await fallback(request)
         } else {
             response = HTTPResponse.notFound()
         }

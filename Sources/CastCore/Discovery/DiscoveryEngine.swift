@@ -11,7 +11,6 @@ public actor DiscoveryEngine {
 
     private let offlineTimeout: TimeInterval
     private var pruneTask: Task<Void, Never>?
-    private var socketFd: Int32 = -1
 
     public init(offlineTimeout: TimeInterval = 15.0) {
         self.offlineTimeout = offlineTimeout
@@ -20,7 +19,6 @@ public actor DiscoveryEngine {
     public func addOrUpdateDevice(_ device: DiscoveredDevice) {
         if let idx = devices.firstIndex(where: { $0.id == device.id }) {
             var updated = device
-            // Retain custom name if already known
             if !devices[idx].name.isEmpty && devices[idx].name != "Smart TV" && updated.name == "Smart TV" {
                 updated.name = devices[idx].name
             }
@@ -59,10 +57,6 @@ public actor DiscoveryEngine {
         isSearching = false
         pruneTask?.cancel()
         pruneTask = nil
-        if socketFd >= 0 {
-            close(socketFd)
-            socketFd = -1
-        }
     }
 
     public func processRawSSDPPacket(_ packet: String, senderIP: String) {
@@ -72,15 +66,32 @@ public actor DiscoveryEngine {
     }
 
     public func sendSSDPMSearch() {
-        let mSearch = """
-        M-SEARCH * HTTP/1.1\r
-        HOST: 239.255.255.250:1900\r
-        MAN: "ssdp:discover"\r
-        MX: 2\r
-        ST: ssdp:all\r
-        \r
-        """
-        // In real network run, sends over UDP 239.255.255.250:1900
-        _ = mSearch
+        let mSearch = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n"
+
+        #if os(Linux)
+        let sock = socket(AF_INET, Int32(SOCK_DGRAM.rawValue), 0)
+        #else
+        let sock = socket(AF_INET, SOCK_DGRAM, 0)
+        #endif
+        guard sock >= 0 else { return }
+        defer { close(sock) }
+
+        var broadcast: Int32 = 1
+        setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(1900).bigEndian
+        addr.sin_addr.s_addr = inet_addr("239.255.255.250")
+
+        let data = Data(mSearch.utf8)
+        data.withUnsafeBytes { rawPtr in
+            guard let baseAddr = rawPtr.baseAddress else { return }
+            withUnsafePointer(to: &addr) { saPtr in
+                saPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { destAddr in
+                    _ = sendto(sock, baseAddr, data.count, 0, destAddr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
     }
 }

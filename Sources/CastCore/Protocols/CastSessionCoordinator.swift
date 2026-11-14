@@ -20,27 +20,19 @@ public actor CastSessionCoordinator {
         switch device.type {
         case .roku:
             let launchURL = RokuECPClient.buildLaunchURL(deviceIP: device.ipAddress, mediaURL: url)
-            var request = URLRequest(url: launchURL)
-            request.httpMethod = "POST"
-            _ = try? await URLSession.shared.data(for: request)
+            await sendHTTPPost(url: launchURL)
 
         case .dlna:
-            guard let locationURL = device.locationURL ?? URL(string: "http://\(device.ipAddress):\(device.port)/upnp/control/AVTransport1") else {
-                return
-            }
             let soap = UPnPClient.generateSetAVTransportURIPayload(mediaURL: url)
-            var request = URLRequest(url: locationURL)
-            request.httpMethod = "POST"
-            request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
-            request.setValue("\"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI\"", forHTTPHeaderField: "SOAPACTION")
-            request.httpBody = Data(soap.utf8)
-            _ = try? await URLSession.shared.data(for: request)
-
-            // Issue play command
+            await sendSOAP(action: "SetAVTransportURI", payload: soap, on: device)
             try? await play()
 
-        case .chromecast, .web:
-            // Handled via Cast V2 / HTML5 viewer
+        case .chromecast:
+            if let dialURL = URL(string: "http://\(device.ipAddress):8008/apps/CC1AD845") {
+                await sendHTTPPost(url: dialURL)
+            }
+
+        case .web:
             break
         }
     }
@@ -52,19 +44,11 @@ public actor CastSessionCoordinator {
         switch device.type {
         case .roku:
             let url = RokuECPClient.buildKeypressURL(deviceIP: device.ipAddress, key: "Play")
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            _ = try? await URLSession.shared.data(for: request)
+            await sendHTTPPost(url: url)
 
         case .dlna:
-            guard let locationURL = device.locationURL ?? URL(string: "http://\(device.ipAddress):\(device.port)/upnp/control/AVTransport1") else { return }
             let soap = UPnPClient.generatePlayPayload()
-            var request = URLRequest(url: locationURL)
-            request.httpMethod = "POST"
-            request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
-            request.setValue("\"urn:schemas-upnp-org:service:AVTransport:1#Play\"", forHTTPHeaderField: "SOAPACTION")
-            request.httpBody = Data(soap.utf8)
-            _ = try? await URLSession.shared.data(for: request)
+            await sendSOAP(action: "Play", payload: soap, on: device)
 
         case .chromecast, .web:
             break
@@ -77,20 +61,12 @@ public actor CastSessionCoordinator {
 
         switch device.type {
         case .roku:
-            let url = RokuECPClient.buildKeypressURL(deviceIP: device.ipAddress, key: "Play") // Play/Pause toggle
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            _ = try? await URLSession.shared.data(for: request)
+            let url = RokuECPClient.buildKeypressURL(deviceIP: device.ipAddress, key: "Play")
+            await sendHTTPPost(url: url)
 
         case .dlna:
-            guard let locationURL = device.locationURL ?? URL(string: "http://\(device.ipAddress):\(device.port)/upnp/control/AVTransport1") else { return }
             let soap = UPnPClient.generatePausePayload()
-            var request = URLRequest(url: locationURL)
-            request.httpMethod = "POST"
-            request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
-            request.setValue("\"urn:schemas-upnp-org:service:AVTransport:1#Pause\"", forHTTPHeaderField: "SOAPACTION")
-            request.httpBody = Data(soap.utf8)
-            _ = try? await URLSession.shared.data(for: request)
+            await sendSOAP(action: "Pause", payload: soap, on: device)
 
         case .chromecast, .web:
             break
@@ -105,19 +81,11 @@ public actor CastSessionCoordinator {
         switch device.type {
         case .roku:
             let url = RokuECPClient.buildKeypressURL(deviceIP: device.ipAddress, key: "Back")
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            _ = try? await URLSession.shared.data(for: request)
+            await sendHTTPPost(url: url)
 
         case .dlna:
-            guard let locationURL = device.locationURL ?? URL(string: "http://\(device.ipAddress):\(device.port)/upnp/control/AVTransport1") else { return }
             let soap = UPnPClient.generateStopPayload()
-            var request = URLRequest(url: locationURL)
-            request.httpMethod = "POST"
-            request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
-            request.setValue("\"urn:schemas-upnp-org:service:AVTransport:1#Stop\"", forHTTPHeaderField: "SOAPACTION")
-            request.httpBody = Data(soap.utf8)
-            _ = try? await URLSession.shared.data(for: request)
+            await sendSOAP(action: "Stop", payload: soap, on: device)
 
         case .chromecast, .web:
             break
@@ -134,14 +102,24 @@ public actor CastSessionCoordinator {
         let timeString = String(format: "%02d:%02d:%02d", hours, minutes, secs)
 
         if case .dlna = device.type {
-            guard let locationURL = device.locationURL ?? URL(string: "http://\(device.ipAddress):\(device.port)/upnp/control/AVTransport1") else { return }
             let soap = UPnPClient.generateSeekPayload(targetTime: timeString)
-            var request = URLRequest(url: locationURL)
-            request.httpMethod = "POST"
-            request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
-            request.setValue("\"urn:schemas-upnp-org:service:AVTransport:1#Seek\"", forHTTPHeaderField: "SOAPACTION")
-            request.httpBody = Data(soap.utf8)
-            _ = try? await URLSession.shared.data(for: request)
+            await sendSOAP(action: "Seek", payload: soap, on: device)
         }
+    }
+
+    private func sendSOAP(action: String, payload: String, on device: DiscoveredDevice) async {
+        guard let controlURL = device.controlURL else { return }
+        var request = URLRequest(url: controlURL)
+        request.httpMethod = "POST"
+        request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
+        request.setValue("\"urn:schemas-upnp-org:service:AVTransport:1#\(action)\"", forHTTPHeaderField: "SOAPACTION")
+        request.httpBody = Data(payload.utf8)
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
+    private func sendHTTPPost(url: URL) async {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        _ = try? await URLSession.shared.data(for: request)
     }
 }

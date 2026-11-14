@@ -20,7 +20,7 @@ public actor IPCServer {
         self.onPacketReceived = callback
     }
 
-    public func start() throws -> UInt16 {
+    public func start(port: UInt16 = 0) throws -> UInt16 {
         guard !isRunning else { return boundPort }
 
         #if os(Linux)
@@ -37,7 +37,7 @@ public actor IPCServer {
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = UInt16(0).bigEndian // Ephemeral port
+        addr.sin_port = port.bigEndian
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
 
         let bindResult = withUnsafePointer(to: &addr) { ptr in
@@ -64,12 +64,14 @@ public actor IPCServer {
         }
         if getSockResult == 0 {
             boundPort = UInt16(bigEndian: boundAddr.sin_port)
+        } else {
+            boundPort = port
         }
 
         listeningSocket = sock
         isRunning = true
 
-        startAcceptLoop()
+        startAcceptLoop(sock: sock)
         return boundPort
     }
 
@@ -89,25 +91,25 @@ public actor IPCServer {
         acceptTask = nil
     }
 
-    private func startAcceptLoop() {
+    private func startAcceptLoop(sock: Int32) {
         acceptTask = Task.detached { [weak self] in
             while true {
-                guard let self = self else { break }
-                let currentSocket = await self.getListeningSocket()
-                guard currentSocket >= 0 else { break }
-
                 var clientAddr = sockaddr_in()
                 var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
                 let clientSock = withUnsafeMutablePointer(to: &clientAddr) { ptr in
                     ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                        accept(currentSocket, saPtr, &clientLen)
+                        accept(sock, saPtr, &clientLen)
                     }
                 }
 
                 if clientSock < 0 {
-                    let stillRunning = await self.getIsRunning()
-                    if !stillRunning { break }
+                    guard let self = self, await self.isActive() else { break }
                     continue
+                }
+
+                guard let self = self else {
+                    close(clientSock)
+                    break
                 }
 
                 Task.detached {
@@ -117,12 +119,8 @@ public actor IPCServer {
         }
     }
 
-    private func getListeningSocket() -> Int32 {
-        return listeningSocket
-    }
-
-    private func getIsRunning() -> Bool {
-        return isRunning
+    private func isActive() -> Bool {
+        return isRunning && listeningSocket >= 0
     }
 
     private func handleClientConnection(socket: Int32) async {
@@ -182,7 +180,7 @@ public actor IPCClient {
 
         let connectResult = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                DarwinConnect(sock, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                posixConnect(sock, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
 
@@ -206,7 +204,7 @@ public actor IPCClient {
             guard let baseAddr = rawPtr.baseAddress else { return }
             var totalSent = 0
             while totalSent < data.count {
-                let sent = GlibcSend(socketFd, baseAddr.advanced(by: totalSent), data.count - totalSent, 0)
+                let sent = posixSend(socketFd, baseAddr.advanced(by: totalSent), data.count - totalSent, 0)
                 if sent <= 0 {
                     throw POSIXError(.EIO)
                 }
@@ -224,12 +222,11 @@ public actor IPCClient {
     }
 }
 
-// Socket function wrapper helpers for cross-platform linking
-private func DarwinConnect(_ fd: Int32, _ sa: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 {
+private func posixConnect(_ fd: Int32, _ sa: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 {
     return connect(fd, sa, len)
 }
 
-private func GlibcSend(_ fd: Int32, _ buf: UnsafeRawPointer, _ len: Int, _ flags: Int32) -> Int {
+private func posixSend(_ fd: Int32, _ buf: UnsafeRawPointer, _ len: Int, _ flags: Int32) -> Int {
     #if os(Linux)
     return send(fd, buf, len, flags)
     #else
