@@ -59,4 +59,15 @@ public struct DiscoveredDevice: Identifiable, Hashable, Sendable, Equatable {
         self.locationURL = locationURL
         self.lastSeen = lastSeen
     }
+
+    public var controlURL: URL? {
+        if let locationURL = locationURL {
+            return locationURL
+        }
+        return URL(string: "http://\(ipAddress):\(port)/upnp/control/AVTransport1")
+    }
+
+    public func ecpURL(path: String) -> URL? {
+        return URL(string: "http://\(ipAddress):\(port)/\(path)")
+    }
 }

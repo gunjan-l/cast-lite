@@ -13,6 +13,7 @@ public struct MirrorTabView: View {
     @State private var showPermissionModal = false
     @State private var showPaywallModal = false
     @State private var hasGrantedLocalNetwork = false
+    @State private var selectedQuality = 0 // 0: Ultra-Low Latency, 1: High Definition (1080p)
     @State private var errorMessage: String?
 
     public init() {}
@@ -49,22 +50,33 @@ public struct MirrorTabView: View {
                 .padding(.horizontal)
 
                 // Mirror control card
-                VStack(spacing: 16) {
+                VStack(spacing: 14) {
                     Image(systemName: "display.and.arrow.down")
-                        .font(.system(size: 48))
+                        .font(.system(size: 44))
                         .foregroundColor(.blue)
 
                     Text("Universal Screen Mirror")
                         .font(.title3.bold())
 
+                    // Latency / Resolution mode picker
+                    Picker("Streaming Mode", selection: $selectedQuality) {
+                        Text("Low Latency (Gaming/Live)").tag(0)
+                        Text("HD 1080p (Presentation)").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+
                     if isStreaming && !streamURL.isEmpty {
                         VStack(spacing: 4) {
-                            Text("Live Web Stream:")
+                            Text("Open on PC, Mac, or Smart TV Browser:")
                                 .font(.caption.bold())
                                 .foregroundColor(.secondary)
                             Text(streamURL)
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundColor(.blue)
+                                .padding(6)
+                                .background(Color(.systemGray6))
+                                .cornerRadius(6)
                         }
                     }
 
@@ -91,7 +103,7 @@ public struct MirrorTabView: View {
                     }
                     .padding(.horizontal)
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 4)
 
                 // Device selector list
                 DeviceSelectorView(
@@ -152,7 +164,7 @@ public struct MirrorTabView: View {
                 let port = try await streamController.start()
                 await MainActor.run {
                     self.isStreaming = true
-                    self.streamURL = "http://localhost:\(port)/view"
+                    self.streamURL = "http://192.168.1.50:\(port)/view"
                 }
             } catch {
                 await MainActor.run {
