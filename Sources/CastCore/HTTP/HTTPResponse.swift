@@ -57,6 +57,9 @@ public struct HTTPResponse: Sendable {
         if finalHeaders["Content-Length"] == nil && finalHeaders["content-length"] == nil {
             finalHeaders["Content-Length"] = "\(body.count)"
         }
+        if finalHeaders["Connection"] == nil && finalHeaders["connection"] == nil {
+            finalHeaders["Connection"] = "close"
+        }
         for (k, v) in finalHeaders {
             headerLines.append("\(k): \(v)")
         }

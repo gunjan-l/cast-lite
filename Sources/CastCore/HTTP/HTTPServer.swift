@@ -31,6 +31,45 @@ public actor HTTPServer {
     public func start() throws -> UInt16 {
         guard !isRunning else { return boundPort }
 
+        // Attempt dual-stack IPv6 socket (binds to both IPv6 and IPv4)
+        #if os(Linux)
+        let sock6 = socket(AF_INET6, Int32(SOCK_STREAM.rawValue), 0)
+        #else
+        let sock6 = socket(AF_INET6, SOCK_STREAM, 0)
+        #endif
+
+        if sock6 >= 0 {
+            var v6Only: Int32 = 0
+            #if os(Linux)
+            setsockopt(sock6, Int32(IPPROTO_IPV6), IPV6_V6ONLY, &v6Only, socklen_t(MemoryLayout<Int32>.size))
+            #else
+            setsockopt(sock6, IPPROTO_IPV6, IPV6_V6ONLY, &v6Only, socklen_t(MemoryLayout<Int32>.size))
+            #endif
+            var opt: Int32 = 1
+            setsockopt(sock6, SOL_SOCKET, SO_REUSEADDR, &opt, socklen_t(MemoryLayout<Int32>.size))
+
+            var addr6 = sockaddr_in6()
+            addr6.sin6_family = sa_family_t(AF_INET6)
+            addr6.sin6_port = requestedPort.bigEndian
+            addr6.sin6_addr = in6addr_any
+
+            let bindResult = withUnsafePointer(to: &addr6) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                    bind(sock6, saPtr, socklen_t(MemoryLayout<sockaddr_in6>.size))
+                }
+            }
+
+            if bindResult == 0 && listen(sock6, 128) == 0 {
+                listeningSocket = sock6
+                boundPort = determineBoundPort(sock: sock6, fallback: requestedPort)
+                isRunning = true
+                startAcceptLoop()
+                return boundPort
+            }
+            close(sock6)
+        }
+
+        // Fallback to standard IPv4 socket
         #if os(Linux)
         let sock = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
         #else
@@ -46,7 +85,7 @@ public actor HTTPServer {
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = requestedPort.bigEndian
-        addr.sin_addr.s_addr = in_addr_t(0) // INADDR_ANY
+        addr.sin_addr.s_addr = in_addr_t(0)
 
         let bindResult = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
@@ -58,30 +97,43 @@ public actor HTTPServer {
             throw POSIXError(.init(rawValue: errno) ?? .EADDRINUSE)
         }
 
-        guard listen(sock, 64) == 0 else {
+        guard listen(sock, 128) == 0 else {
             close(sock)
             throw POSIXError(.init(rawValue: errno) ?? .EIO)
         }
 
-        // Determine actual bound port
-        var boundAddr = sockaddr_in()
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        listeningSocket = sock
+        boundPort = determineBoundPort(sock: sock, fallback: requestedPort)
+        isRunning = true
+
+        startAcceptLoop()
+        return boundPort
+    }
+
+    private func determineBoundPort(sock: Int32, fallback: UInt16) -> UInt16 {
+        var boundAddr = sockaddr_storage()
+        var len = socklen_t(MemoryLayout<sockaddr_storage>.size)
         let getSockResult = withUnsafeMutablePointer(to: &boundAddr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
                 getsockname(sock, saPtr, &len)
             }
         }
         if getSockResult == 0 {
-            boundPort = UInt16(bigEndian: boundAddr.sin_port)
-        } else {
-            boundPort = requestedPort
+            if boundAddr.ss_family == sa_family_t(AF_INET6) {
+                return withUnsafePointer(to: &boundAddr) { ptr in
+                    ptr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { sin6 in
+                        UInt16(bigEndian: sin6.pointee.sin6_port)
+                    }
+                }
+            } else {
+                return withUnsafePointer(to: &boundAddr) { ptr in
+                    ptr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { sin in
+                        UInt16(bigEndian: sin.pointee.sin_port)
+                    }
+                }
+            }
         }
-
-        listeningSocket = sock
-        isRunning = true
-
-        startAcceptLoop()
-        return boundPort
+        return fallback
     }
 
     public func stop() {
@@ -104,8 +156,8 @@ public actor HTTPServer {
         let sock = listeningSocket
         acceptTask = Task.detached { [weak self] in
             while true {
-                var clientAddr = sockaddr_in()
-                var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+                var clientAddr = sockaddr_storage()
+                var clientLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
                 let clientSock = withUnsafeMutablePointer(to: &clientAddr) { ptr in
                     ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
                         accept(sock, saPtr, &clientLen)
@@ -122,6 +174,9 @@ public actor HTTPServer {
                     break
                 }
 
+                var sl = linger(l_onoff: 1, l_linger: 3)
+                setsockopt(clientSock, SOL_SOCKET, SO_LINGER, &sl, socklen_t(MemoryLayout<linger>.size))
+
                 Task.detached {
                     await self.handleClient(socket: clientSock)
                 }
@@ -135,21 +190,37 @@ public actor HTTPServer {
 
     private func handleClient(socket: Int32) async {
         defer {
+            #if os(Linux)
+            shutdown(socket, Int32(SHUT_WR))
+            #else
+            Darwin.shutdown(socket, SHUT_WR)
+            #endif
             close(socket)
         }
 
+        var incomingData = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
-        let bytesRead = recv(socket, &buffer, buffer.count, 0)
-        guard bytesRead > 0 else { return }
 
-        let requestData = Data(buffer[0..<bytesRead])
-        guard let request = HTTPRequestParser.parse(data: requestData) else {
+        while true {
+            let bytesRead = recv(socket, &buffer, buffer.count, 0)
+            if bytesRead <= 0 { break }
+
+            incomingData.append(buffer, count: bytesRead)
+
+            if let string = String(data: incomingData, encoding: .utf8),
+               string.contains("\r\n\r\n") || string.contains("\n\n") {
+                break
+            }
+
+            if incomingData.count >= 65536 { break }
+        }
+
+        guard !incomingData.isEmpty, let request = HTTPRequestParser.parse(data: incomingData) else {
             let badReq = HTTPResponse(statusCode: 400, statusText: "Bad Request", body: Data("Bad Request".utf8))
             _ = sendResponse(socket: socket, response: badReq)
             return
         }
 
-        // Clean path without query items
         let cleanPath = request.path.components(separatedBy: "?").first ?? request.path
         let response: HTTPResponse
         if let handler = routes[cleanPath] {

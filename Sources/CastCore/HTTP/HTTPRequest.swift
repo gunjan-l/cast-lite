@@ -20,12 +20,13 @@ public enum HTTPRequestParser {
             return nil
         }
 
-        let parts = string.components(separatedBy: "\r\n\r\n")
+        let normalized = string.replacingOccurrences(of: "\r\n", with: "\n")
+        let parts = normalized.components(separatedBy: "\n\n")
         guard let headerPart = parts.first, !headerPart.isEmpty else {
             return nil
         }
 
-        let lines = headerPart.components(separatedBy: "\r\n")
+        let lines = headerPart.components(separatedBy: "\n")
         guard let requestLine = lines.first else {
             return nil
         }
@@ -48,7 +49,7 @@ public enum HTTPRequestParser {
 
         let bodyData: Data
         if parts.count > 1 {
-            bodyData = Data(parts[1...].joined(separator: "\r\n\r\n").utf8)
+            bodyData = Data(parts[1...].joined(separator: "\n\n").utf8)
         } else {
             bodyData = Data()
         }
