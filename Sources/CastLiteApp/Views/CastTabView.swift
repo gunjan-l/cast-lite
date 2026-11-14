@@ -8,9 +8,11 @@ import PhotosUI
 public struct CastTabView: View {
     @State private var selectedSegment = 0
     @State private var castCoordinator = CastSessionCoordinator()
+    @State private var subscriptionManager = SubscriptionManager()
     @State private var isPlaying = false
     @State private var playbackPosition: Double = 0.0
     @State private var selectedMediaName: String?
+    @State private var showPaywallModal = false
     #if canImport(PhotosUI)
     @State private var selectedPhotoItem: PhotosPickerItem?
     #endif
@@ -31,8 +33,7 @@ public struct CastTabView: View {
                     cameraRollView
                 } else {
                     WebBrowserView { detectedVideo in
-                        selectedMediaName = detectedVideo.title
-                        isPlaying = true
+                        requestCastMedia(name: detectedVideo.title)
                     }
                 }
 
@@ -44,6 +45,9 @@ public struct CastTabView: View {
                 }
             }
             .navigationTitle("Cast Media")
+            .sheet(isPresented: $showPaywallModal) {
+                PaywallModal(isPresented: $showPaywallModal, subscriptionManager: subscriptionManager)
+            }
         }
     }
 
@@ -76,8 +80,7 @@ public struct CastTabView: View {
             }
             .onChange(of: selectedPhotoItem) { newItem in
                 if newItem != nil {
-                    selectedMediaName = "IMG_4920.MOV"
-                    isPlaying = true
+                    requestCastMedia(name: "IMG_4920.MOV")
                 }
             }
             #else
@@ -91,8 +94,7 @@ public struct CastTabView: View {
                     .font(.headline)
 
                 Button("Simulate Cast Video") {
-                    selectedMediaName = "Sample_Video_4K.mp4"
-                    isPlaying = true
+                    requestCastMedia(name: "Sample_Video_4K.mp4")
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -103,8 +105,7 @@ public struct CastTabView: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                 ForEach(1...6, id: \.self) { idx in
                     Button(action: {
-                        selectedMediaName = "Video_\(idx).mp4"
-                        isPlaying = true
+                        requestCastMedia(name: "Video_\(idx).mp4")
                     }) {
                         ZStack {
                             RoundedRectangle(cornerRadius: 8)
@@ -126,20 +127,20 @@ public struct CastTabView: View {
         }
     }
 
-    private var webCasterPlaceholderView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "globe")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary)
-            Text("Web Video Caster")
-                .font(.headline)
-            Text("Browse video websites and cast HTML5 videos directly with one tap.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
+    private func requestCastMedia(name: String) {
+        Task {
+            let entitled = await subscriptionManager.isEntitled
+            if entitled {
+                await MainActor.run {
+                    self.selectedMediaName = name
+                    self.isPlaying = true
+                }
+            } else {
+                await MainActor.run {
+                    self.showPaywallModal = true
+                }
+            }
         }
-        .padding(.top, 40)
     }
 
     private var remoteControlBar: some View {
