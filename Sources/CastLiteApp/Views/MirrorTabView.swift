@@ -6,59 +6,64 @@ public struct MirrorTabView: View {
     @State private var isStreaming = false
     @State private var streamURL = ""
     @State private var streamController = StreamController()
+    @State private var discoveryEngine = DiscoveryEngine()
+    @State private var discoveredDevices: [DiscoveredDevice] = []
+    @State private var selectedDevice: DiscoveredDevice?
+    @State private var showPermissionModal = false
+    @State private var hasGrantedLocalNetwork = false
     @State private var errorMessage: String?
 
     public init() {}
 
     public var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                // Device connection status banner
-                HStack {
-                    Circle()
-                        .fill(isStreaming ? Color.green : Color.orange)
-                        .frame(width: 10, height: 10)
-                    Text(isStreaming ? "Streaming Active" : "Ready to Stream")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Spacer()
+            VStack(spacing: 16) {
+                // Connection bar with selected device
+                Button(action: {
+                    if !hasGrantedLocalNetwork {
+                        showPermissionModal = true
+                    }
+                }) {
+                    HStack {
+                        Image(systemName: selectedDevice?.type.systemIcon ?? "tv")
+                            .foregroundColor(.blue)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(selectedDevice?.name ?? "No TV Selected")
+                                .font(.subheadline.bold())
+                                .foregroundColor(.primary)
+                            Text(isStreaming ? "Streaming Active" : (selectedDevice == nil ? "Tap to discover devices" : "Connected"))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Circle()
+                            .fill(isStreaming ? Color.green : (selectedDevice == nil ? Color.gray : Color.blue))
+                            .frame(width: 8, height: 8)
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(10)
                 }
                 .padding(.horizontal)
-                .padding(.vertical, 8)
-                .background(Color(.systemGray6))
-                .cornerRadius(8)
-                .padding(.horizontal)
 
-                Spacer()
-
-                // Mirroring Card
+                // Mirror control card
                 VStack(spacing: 16) {
                     Image(systemName: "display.and.arrow.down")
-                        .font(.system(size: 64))
+                        .font(.system(size: 48))
                         .foregroundColor(.blue)
 
                     Text("Universal Screen Mirror")
-                        .font(.title2.bold())
-
-                    Text("Mirror your screen to smart TVs, PC, Mac, or open the link below in any browser on the local Wi-Fi.")
-                        .font(.body)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
+                        .font(.title3.bold())
 
                     if isStreaming && !streamURL.isEmpty {
-                        VStack(spacing: 8) {
-                            Text("Open in any browser:")
+                        VStack(spacing: 4) {
+                            Text("Live Web Stream:")
                                 .font(.caption.bold())
                                 .foregroundColor(.secondary)
                             Text(streamURL)
-                                .font(.system(.body, design: .monospaced))
+                                .font(.system(.caption, design: .monospaced))
                                 .foregroundColor(.blue)
-                                .padding(8)
-                                .background(Color(.systemGray6))
-                                .cornerRadius(6)
                         }
-                        .padding(.top, 8)
                     }
 
                     Button(action: toggleStreaming) {
@@ -75,16 +80,54 @@ public struct MirrorTabView: View {
                     }
                     .padding(.horizontal)
                 }
+                .padding(.vertical, 8)
+
+                // Device selector list
+                DeviceSelectorView(
+                    selectedDevice: $selectedDevice,
+                    devices: discoveredDevices,
+                    isScanning: false,
+                    onRefresh: {
+                        refreshDevices()
+                    }
+                )
 
                 if let error = errorMessage {
                     Text(error)
                         .font(.caption)
                         .foregroundColor(.red)
+                        .padding(.horizontal)
                 }
-
-                Spacer()
             }
             .navigationTitle("Cast-Lite")
+            .sheet(isPresented: $showPermissionModal) {
+                LocalNetworkPermissionModal(isPresented: $showPermissionModal) {
+                    hasGrantedLocalNetwork = true
+                    refreshDevices()
+                }
+            }
+        }
+        .onAppear {
+            loadInitialDevices()
+        }
+    }
+
+    private func loadInitialDevices() {
+        Task {
+            let devs = await discoveryEngine.devices
+            await MainActor.run {
+                self.discoveredDevices = devs
+            }
+        }
+    }
+
+    private func refreshDevices() {
+        Task {
+            await discoveryEngine.sendSSDPMSearch()
+            let devs = await discoveryEngine.devices
+            await MainActor.run {
+                self.discoveredDevices = devs
+            }
         }
     }
 
