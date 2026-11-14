@@ -30,7 +30,10 @@ public struct CastTabView: View {
                 if selectedSegment == 0 {
                     cameraRollView
                 } else {
-                    webCasterPlaceholderView
+                    WebBrowserView { detectedVideo in
+                        selectedMediaName = detectedVideo.title
+                        isPlaying = true
+                    }
                 }
 
                 Spacer()
