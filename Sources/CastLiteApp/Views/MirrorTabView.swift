@@ -7,9 +7,11 @@ public struct MirrorTabView: View {
     @State private var streamURL = ""
     @State private var streamController = StreamController()
     @State private var discoveryEngine = DiscoveryEngine()
+    @State private var subscriptionManager = SubscriptionManager()
     @State private var discoveredDevices: [DiscoveredDevice] = []
     @State private var selectedDevice: DiscoveredDevice?
     @State private var showPermissionModal = false
+    @State private var showPaywallModal = false
     @State private var hasGrantedLocalNetwork = false
     @State private var errorMessage: String?
 
@@ -66,10 +68,10 @@ public struct MirrorTabView: View {
                         }
                     }
 
-                    Button(action: toggleStreaming) {
+                    Button(action: handleStartMirrorAction) {
                         HStack {
                             Image(systemName: isStreaming ? "stop.fill" : "play.fill")
-                            Text(isStreaming ? "Stop Test Stream" : "Start Test Stream")
+                            Text(isStreaming ? "Stop Stream" : "Start Mirror")
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
@@ -115,9 +117,58 @@ public struct MirrorTabView: View {
                     refreshDevices()
                 }
             }
+            .sheet(isPresented: $showPaywallModal) {
+                PaywallModal(isPresented: $showPaywallModal, subscriptionManager: subscriptionManager) {
+                    executeStartStreaming()
+                }
+            }
         }
         .onAppear {
             loadInitialDevices()
+        }
+    }
+
+    private func handleStartMirrorAction() {
+        if isStreaming {
+            executeStopStreaming()
+            return
+        }
+
+        Task {
+            let entitled = await subscriptionManager.isEntitled
+            if entitled {
+                executeStartStreaming()
+            } else {
+                await MainActor.run {
+                    self.showPaywallModal = true
+                }
+            }
+        }
+    }
+
+    private func executeStartStreaming() {
+        Task {
+            do {
+                let port = try await streamController.start()
+                await MainActor.run {
+                    self.isStreaming = true
+                    self.streamURL = "http://localhost:\(port)/view"
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Failed to start server: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func executeStopStreaming() {
+        Task {
+            await streamController.stop()
+            await MainActor.run {
+                self.isStreaming = false
+                self.streamURL = ""
+            }
         }
     }
 
@@ -136,30 +187,6 @@ public struct MirrorTabView: View {
             let devs = await discoveryEngine.devices
             await MainActor.run {
                 self.discoveredDevices = devs
-            }
-        }
-    }
-
-    private func toggleStreaming() {
-        Task {
-            if isStreaming {
-                await streamController.stop()
-                await MainActor.run {
-                    self.isStreaming = false
-                    self.streamURL = ""
-                }
-            } else {
-                do {
-                    let port = try await streamController.start()
-                    await MainActor.run {
-                        self.isStreaming = true
-                        self.streamURL = "http://localhost:\(port)/view"
-                    }
-                } catch {
-                    await MainActor.run {
-                        self.errorMessage = "Failed to start server: \(error.localizedDescription)"
-                    }
-                }
             }
         }
     }
