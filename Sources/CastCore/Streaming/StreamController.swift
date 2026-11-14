@@ -8,12 +8,13 @@ public actor StreamController {
     private let packetizer: MPEGTSPacketizer
     private let segmenter: HLSSegmenter
     private var hostedMedia: [String: Data] = [:]
+    private var liveSegmentTask: Task<Void, Never>?
 
     public init(port: UInt16 = 8080) {
         self.server = HTTPServer(port: port)
         self.patternGenerator = TestPatternGenerator()
         self.packetizer = MPEGTSPacketizer()
-        self.segmenter = HLSSegmenter(targetDuration: 1, windowSize: 4)
+        self.segmenter = HLSSegmenter(targetDuration: 1, windowSize: 5)
     }
 
     public func setHostedMedia(name: String, data: Data) {
@@ -27,14 +28,15 @@ public actor StreamController {
     public func start() async throws -> UInt16 {
         guard !isStreaming else { return serverPort }
 
-        // Populate initial rolling HLS segment with PAT/PMT and initial video TS packet
-        var initialChunk = packetizer.generatePAT()
-        initialChunk.append(packetizer.generatePMT())
-        let initialNalu = Data([0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1E])
-        for pkt in packetizer.packetizeVideo(nalu: initialNalu, pts: 0, isKeyframe: true) {
-            initialChunk.append(pkt)
+        // Populate initial rolling HLS segments
+        for i in 0..<3 {
+            appendSegment(pts: UInt64(i * 90000))
         }
-        segmenter.addSegment(data: initialChunk, duration: 1.0)
+
+        // Register sample MP4 media for playback verification
+        if hostedMedia["sample.mp4"] == nil {
+            hostedMedia["sample.mp4"] = Data(repeating: 0x00, count: 1024)
+        }
 
         // Register HTML stream viewer
         let htmlContent = patternGenerator.generateHTMLTestPattern()
@@ -54,8 +56,7 @@ public actor StreamController {
         await server.registerRoute(path: "/stream") { _ in
             let frame = generator.nextFrame(timestamp: 0)
             let formatted = MJPEGStreamFormatter.formatFrame(jpegData: frame.data)
-            var response = HTTPResponse(statusCode: 200, statusText: "OK", headers: MJPEGStreamFormatter.multipartHeader(), body: formatted)
-            return response
+            return HTTPResponse(statusCode: 200, statusText: "OK", headers: MJPEGStreamFormatter.multipartHeader(), body: formatted)
         }
 
         // Register status API
@@ -105,7 +106,34 @@ public actor StreamController {
         let boundPort = try await server.start()
         self.serverPort = boundPort
         self.isStreaming = true
+
+        startLiveHLSLoop()
         return boundPort
+    }
+
+    private func appendSegment(pts: UInt64) {
+        var chunk = packetizer.generatePAT()
+        chunk.append(packetizer.generatePMT())
+        let nalu = Data([0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00])
+        for pkt in packetizer.packetizeVideo(nalu: nalu, pts: pts, isKeyframe: true) {
+            chunk.append(pkt)
+        }
+        segmenter.addSegment(data: chunk, duration: 1.0)
+    }
+
+    private func startLiveHLSLoop() {
+        liveSegmentTask = Task.detached { [weak self] in
+            var currentPts: UInt64 = 270000
+            while true {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self = self else { break }
+                let active = await self.isStreaming
+                guard active else { break }
+
+                await self.appendSegment(pts: currentPts)
+                currentPts += 90000
+            }
+        }
     }
 
     private func handleMediaRequest(request: HTTPRequest) -> HTTPResponse {
@@ -135,6 +163,8 @@ public actor StreamController {
 
     public func stop() async {
         guard isStreaming else { return }
+        liveSegmentTask?.cancel()
+        liveSegmentTask = nil
         await server.stop()
         self.isStreaming = false
         self.serverPort = 0
