@@ -1,0 +1,52 @@
+name: CastLite
+options:
+  bundleIdPrefix: com.castlite
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  SWIFT_VERSION: "5.10"
+  ENABLE_BITCODE: false
+
+targets:
+  CastCore:
+    type: framework
+    platform: iOS
+    sources:
+      - path: Sources/CastCore
+
+  CastLite:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/CastLiteApp
+    dependencies:
+      - target: CastCore
+      - target: CastLiteBroadcastExtension
+    info:
+      path: Sources/CastLiteApp/Info.plist
+      properties:
+        CFBundleDisplayName: "Cast-Lite"
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        NSLocalNetworkUsageDescription: "Cast-Lite requires local network access to discover Smart TVs and stream media over Wi-Fi."
+        NSPhotoLibraryUsageDescription: "Cast-Lite needs access to your photos and videos to stream them to your Smart TV."
+        NSBonjourServices:
+          - "_googlecast._tcp"
+
+  CastLiteBroadcastExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/CastLiteBroadcastExtension
+    dependencies:
+      - target: CastCore
+    info:
+      path: Sources/CastLiteBroadcastExtension/Info.plist
+      properties:
+        CFBundleDisplayName: "Cast-Lite Broadcast"
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: "com.apple.broadcast-services-upload"
+          NSExtensionPrincipalClass: "SampleHandler"
