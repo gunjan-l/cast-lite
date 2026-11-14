@@ -79,6 +79,15 @@ public struct MirrorTabView: View {
                         .cornerRadius(12)
                     }
                     .padding(.horizontal)
+
+                    // System Broadcast Picker button
+                    HStack {
+                        Text("iOS Screen Mirror:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        BroadcastPickerView(preferredExtension: "com.castlite.broadcast")
+                    }
+                    .padding(.horizontal)
                 }
                 .padding(.vertical, 8)
 
