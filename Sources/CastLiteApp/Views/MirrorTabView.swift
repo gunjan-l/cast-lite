@@ -196,6 +196,13 @@ public struct MirrorTabView: View {
 
     private func loadInitialDevices() {
         Task {
+            await discoveryEngine.setOnDevicesChanged { devs in
+                Task { @MainActor in
+                    self.discoveredDevices = devs
+                }
+            }
+            await discoveryEngine.startDiscovery()
+            await discoveryEngine.sendSSDPMSearch()
             let devs = await discoveryEngine.devices
             await MainActor.run {
                 self.discoveredDevices = devs
@@ -205,6 +212,12 @@ public struct MirrorTabView: View {
 
     private func refreshDevices() {
         Task {
+            await discoveryEngine.setOnDevicesChanged { devs in
+                Task { @MainActor in
+                    self.discoveredDevices = devs
+                }
+            }
+            await discoveryEngine.startDiscovery()
             await discoveryEngine.sendSSDPMSearch()
             let devs = await discoveryEngine.devices
             await MainActor.run {
