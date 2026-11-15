@@ -2,16 +2,13 @@
 import SwiftUI
 import CastCore
 
+@MainActor
 public struct MirrorTabView: View {
     @ObservedObject public var appState: CastAppState
     @State private var showPermissionModal = false
     @State private var showPaywallModal = false
     @State private var hasGrantedLocalNetwork = false
     @State private var selectedQuality = 0 // 0: Ultra-Low Latency, 1: High Definition (1080p)
-
-    public init(appState: CastAppState = CastAppState()) {
-        self.appState = appState
-    }
 
     public init(appState: CastAppState? = nil, networkHelper: NetworkInterfaceHelper = NetworkInterfaceHelper()) {
         if let state = appState {

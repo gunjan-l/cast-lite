@@ -5,6 +5,7 @@ import CastCore
 import PhotosUI
 #endif
 
+@MainActor
 public struct CastTabView: View {
     @ObservedObject public var appState: CastAppState
     @State private var selectedSegment = 0
@@ -14,8 +15,12 @@ public struct CastTabView: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     #endif
 
-    public init(appState: CastAppState = CastAppState()) {
-        self.appState = appState
+    public init(appState: CastAppState? = nil) {
+        if let state = appState {
+            self.appState = state
+        } else {
+            self.appState = CastAppState()
+        }
     }
 
     public var body: some View {

@@ -2,12 +2,17 @@
 import SwiftUI
 import CastCore
 
+@MainActor
 public struct MainTabView: View {
     @StateObject private var appState: CastAppState
     @State private var selectedTab: Int = 0
 
-    public init(appState: CastAppState = CastAppState()) {
-        _appState = StateObject(wrappedValue: appState)
+    public init(appState: CastAppState? = nil) {
+        if let state = appState {
+            _appState = StateObject(wrappedValue: state)
+        } else {
+            _appState = StateObject(wrappedValue: CastAppState())
+        }
     }
 
     public var body: some View {
