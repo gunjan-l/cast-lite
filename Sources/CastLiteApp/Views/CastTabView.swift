@@ -36,6 +36,23 @@ public struct CastTabView: View {
                 .padding(.horizontal)
                 .padding(.top, 4)
 
+                // Error banner (matching MirrorTabView style)
+                if let error = appState.errorMessage {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(Color.red.opacity(0.12))
+                    .cornerRadius(8)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                }
+
                 Picker("Media Source", selection: $selectedSegment) {
                     Text("Camera Roll").tag(0)
                     Text("Web Browser").tag(1)
@@ -94,7 +111,7 @@ public struct CastTabView: View {
             }
             .onChange(of: selectedPhotoItem) { newItem in
                 if newItem != nil {
-                    requestCastMedia(name: "IMG_4920.MOV", streamURL: "http://localhost:8080/media/IMG_4920.MOV")
+                    requestCastMedia(name: "IMG_4920.MOV")
                 }
             }
             #else
@@ -108,7 +125,7 @@ public struct CastTabView: View {
                     .font(.headline)
 
                 Button("Simulate Cast Video") {
-                    requestCastMedia(name: "Sample_Video_4K.mp4", streamURL: "http://localhost:8080/media/Sample_Video_4K.mp4")
+                    requestCastMedia(name: "Sample_Video_4K.mp4")
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -119,7 +136,7 @@ public struct CastTabView: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                 ForEach(1...6, id: \.self) { idx in
                     Button(action: {
-                        requestCastMedia(name: "Video_\(idx).mp4", streamURL: "http://localhost:8080/media/Video_\(idx).mp4")
+                        requestCastMedia(name: "Video_\(idx).mp4")
                     }) {
                         ZStack {
                             RoundedRectangle(cornerRadius: 8)
@@ -145,21 +162,21 @@ public struct CastTabView: View {
         Task {
             let entitled = await appState.subscriptionManager.isEntitled
             if entitled {
-                let targetURL = streamURL ?? "http://localhost:8080/media/\(name)"
+                let targetURL: String
+                if let streamURL = streamURL {
+                    targetURL = streamURL
+                } else {
+                    let (resolvedURL, _) = appState.networkHelper.resolveStreamURL(port: 8080, path: "media/\(name)")
+                    targetURL = resolvedURL
+                }
                 do {
                     try await appState.castMedia(name: name, url: targetURL)
-                    await MainActor.run {
-                        self.selectedMediaName = name
-                    }
+                    self.selectedMediaName = name
                 } catch {
-                    await MainActor.run {
-                        self.appState.errorMessage = error.localizedDescription
-                    }
+                    self.appState.errorMessage = error.localizedDescription
                 }
             } else {
-                await MainActor.run {
-                    self.showPaywallModal = true
-                }
+                self.showPaywallModal = true
             }
         }
     }

@@ -41,8 +41,34 @@ public actor CastV2Client {
     private var receiveTask: Task<Void, Never>?
     public private(set) var onDisconnect: (@Sendable () async -> Void)?
 
+    private final class ContinuationGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var isResumed = false
+        private let continuation: CheckedContinuation<[String: Any], Error>
+
+        init(_ continuation: CheckedContinuation<[String: Any], Error>) {
+            self.continuation = continuation
+        }
+
+        func resume(returning value: [String: Any]) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !isResumed else { return }
+            isResumed = true
+            continuation.resume(returning: value)
+        }
+
+        func resume(throwing error: Error) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !isResumed else { return }
+            isResumed = true
+            continuation.resume(throwing: error)
+        }
+    }
+
     private struct PendingRequest {
-        let continuation: CheckedContinuation<[String: Any], Error>
+        let gate: ContinuationGate
         let timeoutTask: Task<Void, Never>
     }
     private var pendingRequests: [Int: PendingRequest] = [:]
@@ -230,20 +256,29 @@ public actor CastV2Client {
         )
 
         return try await withCheckedThrowingContinuation { continuation in
+            let gate = ContinuationGate(continuation)
             let timeout = self.requestTimeout
-            let timeoutTask = Task { [weak self, reqId] in
+            let timeoutTask = Task { [weak self, reqId, gate] in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 guard !Task.isCancelled else { return }
-                await self?.handleRequestTimeout(requestId: reqId)
+                guard let self = self else {
+                    gate.resume(throwing: CastV2Error.disconnected)
+                    return
+                }
+                await self.handleRequestTimeout(requestId: reqId)
             }
 
             self.pendingRequests[reqId] = PendingRequest(
-                continuation: continuation,
+                gate: gate,
                 timeoutTask: timeoutTask
             )
 
-            Task { [weak self] in
-                guard let self = self else { return }
+            Task { [weak self, gate, reqId] in
+                guard let self = self else {
+                    timeoutTask.cancel()
+                    gate.resume(throwing: CastV2Error.disconnected)
+                    return
+                }
                 do {
                     try await self.sendCastMessage(message)
                 } catch {
@@ -262,14 +297,14 @@ public actor CastV2Client {
 
     private func handleRequestTimeout(requestId: Int) {
         if let pending = pendingRequests.removeValue(forKey: requestId) {
-            pending.continuation.resume(throwing: CastV2Error.timeout(requestId))
+            pending.gate.resume(throwing: CastV2Error.timeout(requestId))
         }
     }
 
     private func handleRequestSendFailed(requestId: Int, error: Error) {
         if let pending = pendingRequests.removeValue(forKey: requestId) {
             pending.timeoutTask.cancel()
-            pending.continuation.resume(throwing: error)
+            pending.gate.resume(throwing: error)
         }
     }
 
@@ -354,7 +389,7 @@ public actor CastV2Client {
 
             if let reqId = reqId, let pending = pendingRequests.removeValue(forKey: reqId) {
                 pending.timeoutTask.cancel()
-                pending.continuation.resume(returning: json)
+                pending.gate.resume(returning: json)
             }
         }
     }
@@ -368,7 +403,7 @@ public actor CastV2Client {
 
         for (_, pending) in pendingRequests {
             pending.timeoutTask.cancel()
-            pending.continuation.resume(throwing: CastV2Error.disconnected)
+            pending.gate.resume(throwing: CastV2Error.disconnected)
         }
         pendingRequests.removeAll()
 

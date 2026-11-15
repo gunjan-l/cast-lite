@@ -158,4 +158,24 @@ final class CastMessageCodecTests: XCTestCase {
         XCTAssertEqual(decoded.namespace, "c")
         XCTAssertEqual(decoded.payloadUtf8, "d")
     }
+
+    func testDecodeVarintTenthByteGreaterThanOneThrowsMalformedVarint() {
+        // Unknown field with a 10-byte varint where the 10th byte is 0x02 (b > 1)
+        var bytes: [UInt8] = [
+            0x08, 0x00,
+            0x12, 0x01, 0x61,
+            0x1a, 0x01, 0x62,
+            0x22, 0x01, 0x63,
+            0x28, 0x00,
+            0x32, 0x01, 0x64,
+            0x98, 0x06 // Field 99 (wire type 0 varint)
+        ]
+        bytes.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02])
+        XCTAssertThrowsError(try CastMessageCodec.decode(Data(bytes))) { error in
+            guard let codecError = error as? CastCodecError, case .malformedVarint = codecError else {
+                XCTFail("Expected malformedVarint, got \(error)")
+                return
+            }
+        }
+    }
 }

@@ -186,16 +186,22 @@ public enum CastMessageCodec {
         mutating func readVarint() throws -> UInt64 {
             var result: UInt64 = 0
             var shift: UInt64 = 0
+            var count = 0
             while true {
                 let b = try readByte()
+                count += 1
+                if count == 10 {
+                    if (b & ~0x01) != 0 {
+                        throw CastCodecError.malformedVarint
+                    }
+                    result |= UInt64(b & 0x01) << shift
+                    return result
+                }
                 result |= UInt64(b & 0x7F) << shift
                 if (b & 0x80) == 0 {
                     return result
                 }
                 shift += 7
-                if shift > 64 {
-                    throw CastCodecError.malformedVarint
-                }
             }
         }
 

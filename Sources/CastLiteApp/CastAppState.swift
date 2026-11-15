@@ -68,9 +68,7 @@ public final class CastAppState: ObservableObject {
         self.playbackPosition = pos
         self.currentVolume = vol * 100.0
         self.selectedDevice = dev
-        if let err = err {
-            self.errorMessage = err
-        }
+        self.errorMessage = err
         self.isReconnecting = isRecon
         if let mediaURL = mediaURL, !mediaURL.isEmpty {
             self.streamURL = mediaURL
@@ -84,13 +82,9 @@ public final class CastAppState: ObservableObject {
             if let dev = device {
                 do {
                     try await coordinator.connect(to: dev)
-                    await MainActor.run {
-                        self.errorMessage = nil
-                    }
+                    self.errorMessage = nil
                 } catch {
-                    await MainActor.run {
-                        self.errorMessage = error.localizedDescription
-                    }
+                    self.errorMessage = error.localizedDescription
                 }
             }
             await syncCoordinatorProperties()
@@ -103,9 +97,7 @@ public final class CastAppState: ObservableObject {
                 try await coordinator.connect(to: device)
                 await syncCoordinatorProperties()
             } catch {
-                await MainActor.run {
-                    self.errorMessage = error.localizedDescription
-                }
+                self.errorMessage = error.localizedDescription
             }
         }
     }
@@ -115,21 +107,17 @@ public final class CastAppState: ObservableObject {
             streamController: streamController,
             networkHelper: networkHelper
         )
-        await MainActor.run {
-            self.isStreaming = true
-            self.streamURL = url
-            self.errorMessage = nil
-        }
+        self.isStreaming = true
+        self.streamURL = url
+        self.errorMessage = nil
         await syncCoordinatorProperties()
         return url
     }
 
     public func stopScreenMirror() async {
         try? await coordinator.stopScreenMirror(streamController: streamController)
-        await MainActor.run {
-            self.isStreaming = false
-            self.streamURL = ""
-        }
+        self.isStreaming = false
+        self.streamURL = ""
         await syncCoordinatorProperties()
     }
 
@@ -138,28 +126,22 @@ public final class CastAppState: ObservableObject {
             throw CastTransportError.notConnected
         }
         try await coordinator.castMedia(url: url, to: device, title: name)
-        await MainActor.run {
-            self.streamURL = url
-            self.isPlaying = true
-        }
+        self.streamURL = url
+        self.isPlaying = true
         await syncCoordinatorProperties()
     }
 
     public func play() {
         Task {
             try? await coordinator.play()
-            await MainActor.run {
-                self.isPlaying = true
-            }
+            self.isPlaying = true
         }
     }
 
     public func pause() {
         Task {
             try? await coordinator.pause()
-            await MainActor.run {
-                self.isPlaying = false
-            }
+            self.isPlaying = false
         }
     }
 
@@ -188,12 +170,13 @@ public final class CastAppState: ObservableObject {
 
     public func stopPlayback() {
         Task {
-            try? await coordinator.stop()
-            await MainActor.run {
-                self.isPlaying = false
-                self.streamURL = ""
+            if self.isStreaming {
+                await self.streamController.stop()
             }
-            await syncCoordinatorProperties()
+            try? await self.coordinator.stop()
+            self.isPlaying = false
+            self.streamURL = ""
+            await self.syncCoordinatorProperties()
         }
     }
 
@@ -206,14 +189,14 @@ public final class CastAppState: ObservableObject {
             }
             await discoveryEngine.startDiscovery()
             let devs = await discoveryEngine.devices
-            await MainActor.run {
-                self.discoveredDevices = devs
-            }
+            self.discoveredDevices = devs
         }
     }
 
     public func refreshDevices() {
+        self.isScanning = true
         Task {
+            defer { self.isScanning = false }
             await discoveryEngine.setOnDevicesChanged { [weak self] devs in
                 Task { @MainActor [weak self] in
                     self?.discoveredDevices = devs
@@ -222,9 +205,7 @@ public final class CastAppState: ObservableObject {
             await discoveryEngine.startDiscovery()
             await discoveryEngine.sendAllSSDPMSearches()
             let devs = await discoveryEngine.devices
-            await MainActor.run {
-                self.discoveredDevices = devs
-            }
+            self.discoveredDevices = devs
         }
     }
 }

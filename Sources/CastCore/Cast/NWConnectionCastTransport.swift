@@ -90,6 +90,7 @@ public final class NWConnectionCastTransport: CastTransport, @unchecked Sendable
                     self.lock.lock()
                     self._isConnected = false
                     self._isReceiving = false
+                    self.connection = nil
                     let cont = self.streamContinuation
                     self.streamContinuation = nil
                     self.activeStream = nil
@@ -107,6 +108,7 @@ public final class NWConnectionCastTransport: CastTransport, @unchecked Sendable
                     self.lock.lock()
                     self._isConnected = false
                     self._isReceiving = false
+                    self.connection = nil
                     let cont = self.streamContinuation
                     self.streamContinuation = nil
                     self.activeStream = nil
@@ -145,6 +147,7 @@ public final class NWConnectionCastTransport: CastTransport, @unchecked Sendable
                 self.lock.lock()
                 self._isConnected = false
                 self._isReceiving = false
+                self.connection = nil
                 let cont = self.streamContinuation
                 self.streamContinuation = nil
                 self.activeStream = nil
@@ -157,6 +160,7 @@ public final class NWConnectionCastTransport: CastTransport, @unchecked Sendable
                 self.lock.lock()
                 self._isConnected = false
                 self._isReceiving = false
+                self.connection = nil
                 let cont = self.streamContinuation
                 self.streamContinuation = nil
                 self.activeStream = nil

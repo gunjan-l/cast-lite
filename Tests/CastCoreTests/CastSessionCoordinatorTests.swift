@@ -798,4 +798,215 @@ final class CastSessionCoordinatorTests: XCTestCase {
         let isReconnecting = await coordinator.isReconnecting
         XCTAssertFalse(isReconnecting)
     }
+
+    func testHandleUnexpectedDisconnectionWhileReadyTransitionsToDisconnectedAndResetsClient() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport }
+        )
+        let device = makeChromecastDevice()
+        try await coordinator.connect(to: device)
+
+        let readyState = await coordinator.connectionState
+        XCTAssertEqual(readyState, .ready)
+        let clientBefore = await coordinator.castClient
+        XCTAssertNotNil(clientBefore)
+
+        // Drop while ready
+        await coordinator.handleUnexpectedDisconnection()
+
+        let stateAfter = await coordinator.connectionState
+        XCTAssertEqual(stateAfter, .disconnected)
+        let clientAfter = await coordinator.castClient
+        XCTAssertNil(clientAfter)
+    }
+
+    func testHandleUnexpectedDisconnectionPreservesMediaTitle() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport }
+        )
+        let device = makeChromecastDevice()
+        try await coordinator.castMedia(url: "http://example.com/custom.mp4", to: device, title: "Epic Movie")
+
+        let titleBefore = await coordinator.currentMediaTitle
+        XCTAssertEqual(titleBefore, "Epic Movie")
+
+        // Trigger unexpected disconnect while streaming
+        await coordinator.handleUnexpectedDisconnection()
+
+        let titleAfter = await coordinator.currentMediaTitle
+        XCTAssertEqual(titleAfter, "Epic Movie")
+
+        let loadMsgs = mockDevice.sentMessages.filter { msg in
+            msg.namespace == CastNamespaces.media &&
+            (msg.payloadUtf8?.contains("\"LOAD\"") == true)
+        }
+        XCTAssertFalse(loadMsgs.isEmpty)
+        for msg in loadMsgs {
+            XCTAssertTrue(msg.payloadUtf8?.contains("Epic Movie") == true)
+            XCTAssertFalse(msg.payloadUtf8?.contains("Screen Mirror") == true)
+        }
+    }
+
+    func testStartScreenMirrorRecordsErrorMessageWhenResolutionIsFallback() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport }
+        )
+        let device = makeChromecastDevice()
+        try await coordinator.connect(to: device)
+
+        let streamController = StreamController(port: 0)
+        let fallbackHelper = NetworkInterfaceHelper(provider: MockNetworkInterfaceProvider(interfaces: []))
+
+        _ = try await coordinator.startScreenMirror(
+            streamController: streamController,
+            networkHelper: fallbackHelper
+        )
+
+        let errorMsg = await coordinator.errorMessage
+        XCTAssertNotNil(errorMsg)
+        XCTAssertTrue(errorMsg?.contains("Wi-Fi is disconnected") == true)
+
+        await streamController.stop()
+    }
+
+    func testCastMediaDoesNotSwallowDialFallbackError() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.transport.shouldFailConnection = CastTransportError.connectionFailed("Cast transport failed")
+
+        struct DialFailedError: Error, LocalizedError {
+            var errorDescription: String? { "DIAL HTTP 500 Internal Error" }
+        }
+
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport },
+            dialHTTPPoster: { (_: URL, _: Data?) async throws in
+                throw DialFailedError()
+            }
+        )
+
+        let device = makeChromecastDevice()
+        do {
+            try await coordinator.castMedia(url: "http://example.com/video.mp4", to: device)
+            XCTFail("Expected castMedia to throw when both Cast V2 and DIAL fail")
+        } catch {
+            let isPlaying = await coordinator.isPlaying
+            XCTAssertFalse(isPlaying)
+            let state = await coordinator.connectionState
+            if case .error(let msg) = state {
+                XCTAssertTrue(msg.contains("DIAL HTTP 500"))
+            } else {
+                XCTFail("Expected error state, got \(state)")
+            }
+        }
+    }
+
+    func testCastChromecastV2TriggersDialFallbackOnLoadFailed() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.transport.onSend = { [weak transport = mockDevice.transport] data in
+            var framer = CastPacketFramer()
+            guard let packets = try? framer.append(data),
+                  let packet = packets.first,
+                  let msg = try? CastMessageCodec.decode(packet),
+                  let payload = msg.payloadUtf8,
+                  let d = payload.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let reqId = json["requestId"] as? Int,
+                  let type = json["type"] as? String else { return }
+
+            if msg.namespace == CastNamespaces.receiver && type == "LAUNCH" {
+                let statusJSON = """
+                {
+                    "type": "RECEIVER_STATUS",
+                    "requestId": \(reqId),
+                    "status": {
+                        "applications": [
+                            {
+                                "appId": "\(CastConstants.defaultAppId)",
+                                "displayName": "Default Media Receiver",
+                                "sessionId": "sess-1",
+                                "statusText": "Ready",
+                                "transportId": "trans-1"
+                            }
+                        ]
+                    }
+                }
+                """
+                let respMsg = CastMessage(
+                    protocolVersion: .castv2_1_0,
+                    sourceId: "receiver-0",
+                    destinationId: msg.sourceId,
+                    namespace: CastNamespaces.receiver,
+                    payloadType: .string,
+                    payloadUtf8: statusJSON
+                )
+                if let framed = try? CastPacketFramer.frame(message: respMsg) {
+                    transport?.simulateReceive(data: framed)
+                }
+            } else if msg.namespace == CastNamespaces.media && type == "LOAD" {
+                let failJSON = """
+                {
+                    "type": "LOAD_FAILED",
+                    "requestId": \(reqId)
+                }
+                """
+                let respMsg = CastMessage(
+                    protocolVersion: .castv2_1_0,
+                    sourceId: msg.destinationId,
+                    destinationId: msg.sourceId,
+                    namespace: CastNamespaces.media,
+                    payloadType: .string,
+                    payloadUtf8: failJSON
+                )
+                if let framed = try? CastPacketFramer.frame(message: respMsg) {
+                    transport?.simulateReceive(data: framed)
+                }
+            }
+        }
+
+        final class DialCallRecorder: @unchecked Sendable {
+            let lock = NSLock()
+            var called = false
+            func record() { lock.lock(); defer { lock.unlock() }; called = true }
+            var wasCalled: Bool { lock.lock(); defer { lock.unlock() }; return called }
+        }
+        let dialRecorder = DialCallRecorder()
+
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport },
+            dialHTTPPoster: { (_: URL, _: Data?) async throws in
+                dialRecorder.record()
+            }
+        )
+
+        let device = makeChromecastDevice()
+        try await coordinator.castMedia(url: "http://example.com/video.mp4", to: device)
+
+        XCTAssertTrue(dialRecorder.wasCalled)
+        let isPlaying = await coordinator.isPlaying
+        XCTAssertTrue(isPlaying)
+        let state = await coordinator.connectionState
+        XCTAssertEqual(state, .streaming)
+    }
+
+    func testStopSetsStateToDisconnected() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport }
+        )
+        let device = makeChromecastDevice()
+        try await coordinator.castMedia(url: "http://example.com/video.mp4", to: device)
+
+        let stateBefore = await coordinator.connectionState
+        XCTAssertEqual(stateBefore, .streaming)
+
+        try await coordinator.stop()
+
+        let stateAfter = await coordinator.connectionState
+        XCTAssertEqual(stateAfter, .disconnected)
+        let isPlaying = await coordinator.isPlaying
+        XCTAssertFalse(isPlaying)
+    }
 }

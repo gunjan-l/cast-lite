@@ -788,4 +788,27 @@ final class CastV2ClientTests: XCTestCase {
         let isConnectedAfter = await client.isConnected
         XCTAssertFalse(isConnectedAfter)
     }
+
+    func testRequestSendFailsResumesContinuationWithError() async throws {
+        let transport = MockCastTransport()
+        let client = CastV2Client(
+            transport: transport,
+            clientSourceId: "sender-0",
+            heartbeatInterval: 60.0,
+            requestTimeout: 5.0
+        )
+        try await client.connect(host: "192.168.1.150", port: 8009)
+        await transport.close()
+
+        do {
+            _ = try await client.request(
+                namespace: CastNamespaces.receiver,
+                destinationId: "receiver-0",
+                payload: ["type": "GET_STATUS"]
+            )
+            XCTFail("Expected send failure error")
+        } catch {
+            XCTAssertTrue(error is CastTransportError || error is CastV2Error)
+        }
+    }
 }
