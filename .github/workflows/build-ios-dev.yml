@@ -1,0 +1,50 @@
+name: Build iOS Development IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - integration/cast-lite-spec
+
+jobs:
+  build-dev:
+    name: Build & Package Development IPA (Debug)
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Set Xcode Version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Build Development Archive (Unsigned)
+        run: |
+          xcodebuild archive \
+            -project CastLite.xcodeproj \
+            -scheme CastLite \
+            -configuration Debug \
+            -destination "generic/platform=iOS" \
+            -archivePath build/CastLite.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package Payload into IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/CastLite.xcarchive/Products/Applications/CastLite.app Payload/
+          zip -r CastLite-Dev.ipa Payload
+          rm -rf Payload
+
+      - name: Upload Development IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CastLite-Dev-iOS
+          path: CastLite-Dev.ipa
