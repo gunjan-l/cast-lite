@@ -18,6 +18,7 @@ targets:
     type: application
     platform: iOS
     bundleId: com.castlite.app
+    scheme: {}
     sources:
       - path: Sources/CastLiteApp
     dependencies:
@@ -40,6 +41,7 @@ targets:
     type: app-extension
     platform: iOS
     bundleId: com.castlite.app.broadcast
+    scheme: {}
     sources:
       - path: Sources/CastLiteBroadcastExtension
     dependencies:
