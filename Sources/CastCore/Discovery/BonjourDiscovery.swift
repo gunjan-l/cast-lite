@@ -59,11 +59,11 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
 
         DispatchQueue.main.async { [weak self] in
             oldBrowser?.stop()
-            oldBrowser?.removeFromRunLoop(.main, forMode: .common)
+            oldBrowser?.remove(from: .main, forMode: .common)
             oldBrowser?.delegate = nil
             for service in oldServices {
                 service.stop()
-                service.removeFromRunLoop(.main, forMode: .common)
+                service.remove(from: .main, forMode: .common)
                 service.delegate = nil
             }
 
@@ -93,12 +93,12 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
             self.lock.unlock()
 
             currentBrowser?.stop()
-            currentBrowser?.removeFromRunLoop(.main, forMode: .common)
+            currentBrowser?.remove(from: .main, forMode: .common)
             currentBrowser?.delegate = nil
 
             for service in services {
                 service.stop()
-                service.removeFromRunLoop(.main, forMode: .common)
+                service.remove(from: .main, forMode: .common)
                 service.delegate = nil
             }
         }
@@ -125,7 +125,7 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
     // MARK: - NetServiceDelegate
 
     public func netServiceDidResolveAddress(_ sender: NetService) {
-        sender.removeFromRunLoop(.main, forMode: .common)
+        sender.remove(from: .main, forMode: .common)
         sender.delegate = nil
 
         lock.lock()
@@ -175,7 +175,7 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
     }
 
     public func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
-        sender.removeFromRunLoop(.main, forMode: .common)
+        sender.remove(from: .main, forMode: .common)
         sender.delegate = nil
         lock.lock()
         defer { lock.unlock() }
