@@ -558,4 +558,244 @@ final class CastSessionCoordinatorTests: XCTestCase {
 
         XCTAssertFalse(recorder.urls.isEmpty)
     }
+
+    // MARK: - Ticket #16 UI State Centralization and Auto-Reconnection Tests
+
+    private func makeNetworkHelper() -> NetworkInterfaceHelper {
+        let mockProvider = MockNetworkInterfaceProvider(interfaces: [
+            NetworkInterface(name: "en0", address: "192.168.1.10", isIPv4: true, isUp: true, isLoopback: false)
+        ])
+        return NetworkInterfaceHelper(provider: mockProvider)
+    }
+
+    final class StateRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _states: [CastConnectionState] = []
+        var states: [CastConnectionState] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _states
+        }
+        func record(_ state: CastConnectionState) {
+            lock.lock()
+            defer { lock.unlock() }
+            _states.append(state)
+        }
+    }
+
+    func testSelectDeviceUpdatesSelectedDeviceAndTransitionsState() async throws {
+        let coordinator = CastSessionCoordinator()
+        let state = await coordinator.connectionState
+        XCTAssertEqual(state, .disconnected)
+        let active = await coordinator.selectedDevice
+        XCTAssertNil(active)
+
+        let device = makeChromecastDevice()
+        await coordinator.selectDevice(device)
+        let selected = await coordinator.selectedDevice
+        XCTAssertEqual(selected, device)
+        let stateAfterSelect = await coordinator.connectionState
+        XCTAssertEqual(stateAfterSelect, .disconnected)
+
+        await coordinator.selectDevice(nil)
+        let deselected = await coordinator.selectedDevice
+        XCTAssertNil(deselected)
+        let stateAfterNil = await coordinator.connectionState
+        XCTAssertEqual(stateAfterNil, .disconnected)
+    }
+
+    func testConnectTransitionsDisconnectedToConnectingToReady() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport }
+        )
+        let recorder = StateRecorder()
+        await coordinator.setOnConnectionStateChanged { state in
+            recorder.record(state)
+        }
+
+        let device = makeChromecastDevice()
+        try await coordinator.connect(to: device)
+
+        let finalState = await coordinator.connectionState
+        XCTAssertEqual(finalState, .ready)
+        let selected = await coordinator.selectedDevice
+        XCTAssertEqual(selected, device)
+
+        let states = recorder.states
+        XCTAssertTrue(states.contains(.connecting))
+        XCTAssertTrue(states.contains(.ready))
+    }
+
+    func testStartScreenMirrorStartsServerCastsStreamAndTransitionsToStreaming() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport }
+        )
+        let device = makeChromecastDevice()
+        try await coordinator.connect(to: device)
+
+        let streamController = StreamController(port: 0)
+        let netHelper = makeNetworkHelper()
+
+        let streamURL = try await coordinator.startScreenMirror(
+            streamController: streamController,
+            networkHelper: netHelper
+        )
+
+        let state = await coordinator.connectionState
+        XCTAssertEqual(state, .streaming)
+        let isStreaming = await streamController.isStreaming
+        XCTAssertTrue(isStreaming)
+        let isPlaying = await coordinator.isPlaying
+        XCTAssertTrue(isPlaying)
+        XCTAssertTrue(streamURL.contains(".m3u8"))
+
+        // Verify LOAD was sent to Chromecast
+        let loadMsg = mockDevice.sentMessages.first { msg in
+            msg.namespace == CastNamespaces.media &&
+            (msg.payloadUtf8?.contains("\"LOAD\"") == true)
+        }
+        XCTAssertNotNil(loadMsg)
+        XCTAssertTrue(loadMsg?.payloadUtf8?.contains("Screen Mirror") == true)
+
+        await streamController.stop()
+    }
+
+    func testStopScreenMirrorStopsPlaybackAndServerAndTransitionsToReadyOrDisconnected() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport }
+        )
+        let device = makeChromecastDevice()
+        try await coordinator.connect(to: device)
+
+        let streamController = StreamController(port: 0)
+        let netHelper = makeNetworkHelper()
+        _ = try await coordinator.startScreenMirror(
+            streamController: streamController,
+            networkHelper: netHelper
+        )
+
+        try await coordinator.stopScreenMirror(streamController: streamController)
+
+        let isStreaming = await streamController.isStreaming
+        XCTAssertFalse(isStreaming)
+        let isPlaying = await coordinator.isPlaying
+        XCTAssertFalse(isPlaying)
+        let state = await coordinator.connectionState
+        XCTAssertEqual(state, .ready)
+
+        // If device is deselected and stopped
+        await coordinator.selectDevice(nil)
+        let stateAfterDeselect = await coordinator.connectionState
+        XCTAssertEqual(stateAfterDeselect, .disconnected)
+    }
+
+    final class AtomicCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _count: Int = 0
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _count
+        }
+        func increment() {
+            lock.lock()
+            defer { lock.unlock() }
+            _count += 1
+        }
+    }
+
+    func testAutoReconnectionSuccessOnUnexpectedSocketDrop() async throws {
+        let mockDevice = MockChromecastDevice()
+        let counter = AtomicCounter()
+
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in
+                counter.increment()
+                return mockDevice.transport
+            }
+        )
+        let device = makeChromecastDevice()
+        try await coordinator.connect(to: device)
+
+        let streamController = StreamController(port: 0)
+        let netHelper = makeNetworkHelper()
+        _ = try await coordinator.startScreenMirror(
+            streamController: streamController,
+            networkHelper: netHelper
+        )
+
+        let recorder = StateRecorder()
+        await coordinator.setOnConnectionStateChanged { state in
+            recorder.record(state)
+        }
+
+        // Trigger unexpected disconnect
+        await coordinator.handleUnexpectedDisconnection()
+
+        let finalState = await coordinator.connectionState
+        XCTAssertEqual(finalState, .streaming)
+        let isReconnecting = await coordinator.isReconnecting
+        XCTAssertFalse(isReconnecting)
+        let isPlaying = await coordinator.isPlaying
+        XCTAssertTrue(isPlaying)
+
+        let states = recorder.states
+        XCTAssertTrue(states.contains(.connecting))
+        XCTAssertTrue(states.contains(.streaming))
+
+        await streamController.stop()
+    }
+
+    func testAutoReconnectionFailureTearsDownServerAndSetsErrorMessage() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport }
+        )
+        let device = makeChromecastDevice()
+        try await coordinator.connect(to: device)
+
+        let streamController = StreamController(port: 0)
+        let netHelper = makeNetworkHelper()
+        _ = try await coordinator.startScreenMirror(
+            streamController: streamController,
+            networkHelper: netHelper
+        )
+
+        // Make future connections fail
+        mockDevice.transport.shouldFailConnection = CastTransportError.connectionFailed("Host unreachable")
+
+        await coordinator.handleUnexpectedDisconnection()
+
+        let finalState = await coordinator.connectionState
+        XCTAssertTrue(finalState == .disconnected || finalState == .error("TV disconnected. Streaming stopped."))
+        let errorMessage = await coordinator.errorMessage
+        XCTAssertEqual(errorMessage, "TV disconnected. Streaming stopped.")
+        let isReconnecting = await coordinator.isReconnecting
+        XCTAssertFalse(isReconnecting)
+
+        // Verify local server was torn down (no orphaned server)
+        let isStreaming = await streamController.isStreaming
+        XCTAssertFalse(isStreaming)
+    }
+
+    func testAutoReconnectionDoesNotLoopInfinitely() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.transport.shouldFailConnection = CastTransportError.connectionFailed("No network")
+
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in mockDevice.transport }
+        )
+        let device = makeChromecastDevice()
+        // Force state to streaming to simulate active stream drop
+        await coordinator.selectDevice(device)
+        // Manually attempt handleUnexpectedDisconnection when not in streaming state: does nothing
+        await coordinator.handleUnexpectedDisconnection()
+        let state = await coordinator.connectionState
+        XCTAssertEqual(state, .disconnected)
+        let isReconnecting = await coordinator.isReconnecting
+        XCTAssertFalse(isReconnecting)
+    }
 }

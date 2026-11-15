@@ -39,6 +39,7 @@ public actor CastV2Client {
     private var currentRequestId: Int = 0
     private var heartbeatTask: Task<Void, Never>?
     private var receiveTask: Task<Void, Never>?
+    public private(set) var onDisconnect: (@Sendable () async -> Void)?
 
     private struct PendingRequest {
         let continuation: CheckedContinuation<[String: Any], Error>
@@ -56,6 +57,10 @@ public actor CastV2Client {
         self.clientSourceId = clientSourceId
         self.heartbeatInterval = heartbeatInterval
         self.requestTimeout = requestTimeout
+    }
+
+    public func setOnDisconnect(_ handler: (@Sendable () async -> Void)?) {
+        self.onDisconnect = handler
     }
 
     // MARK: - Lifecycle
@@ -98,6 +103,10 @@ public actor CastV2Client {
             cleanupLocalState()
             return
         }
+
+        let savedHandler = onDisconnect
+        onDisconnect = nil
+        defer { onDisconnect = savedHandler }
 
         heartbeatTask?.cancel()
         heartbeatTask = nil
@@ -369,14 +378,19 @@ public actor CastV2Client {
     }
 
     private func handleReceiveError(_ error: Error) async {
+        let wasConnected = isConnected
         cleanupLocalState()
         await transport.close()
+        if wasConnected {
+            await onDisconnect?()
+        }
     }
 
     private func handleStreamEnded() async {
         if isConnected {
             cleanupLocalState()
             await transport.close()
+            await onDisconnect?()
         }
     }
 }

@@ -6,23 +6,36 @@ import PhotosUI
 #endif
 
 public struct CastTabView: View {
+    @ObservedObject public var appState: CastAppState
     @State private var selectedSegment = 0
-    @State private var castCoordinator = CastSessionCoordinator()
-    @State private var subscriptionManager = SubscriptionManager()
-    @State private var isPlaying = false
-    @State private var playbackPosition: Double = 0.0
-    @State private var playbackVolume: Double = 80.0
     @State private var selectedMediaName: String?
     @State private var showPaywallModal = false
     #if canImport(PhotosUI)
     @State private var selectedPhotoItem: PhotosPickerItem?
     #endif
 
-    public init() {}
+    public init(appState: CastAppState = CastAppState()) {
+        self.appState = appState
+    }
 
     public var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                // Header displaying the centrally selected device
+                HStack {
+                    Image(systemName: appState.selectedDevice?.type.systemIcon ?? "tv")
+                        .foregroundColor(.blue)
+                    Text("Target TV: \(appState.selectedDevice?.name ?? "No TV Selected")")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Circle()
+                        .fill(appState.selectedDevice != nil ? Color.blue : Color.gray)
+                        .frame(width: 8, height: 8)
+                }
+                .padding(.horizontal)
+                .padding(.top, 4)
+
                 Picker("Media Source", selection: $selectedSegment) {
                     Text("Camera Roll").tag(0)
                     Text("Web Browser").tag(1)
@@ -41,13 +54,13 @@ public struct CastTabView: View {
                 Spacer()
 
                 // Remote Control Overlay when media is selected/playing
-                if selectedMediaName != nil {
+                if selectedMediaName != nil || appState.isPlaying || appState.connectionState == .streaming {
                     remoteControlBar
                 }
             }
             .navigationTitle("Cast Media")
             .sheet(isPresented: $showPaywallModal) {
-                PaywallModal(isPresented: $showPaywallModal, subscriptionManager: subscriptionManager)
+                PaywallModal(isPresented: $showPaywallModal, subscriptionManager: appState.subscriptionManager)
             }
         }
     }
@@ -130,15 +143,18 @@ public struct CastTabView: View {
 
     private func requestCastMedia(name: String, streamURL: String? = nil) {
         Task {
-            let entitled = await subscriptionManager.isEntitled
+            let entitled = await appState.subscriptionManager.isEntitled
             if entitled {
                 let targetURL = streamURL ?? "http://localhost:8080/media/\(name)"
-                let targetDevice = DiscoveredDevice(id: "active-tv", name: "Smart TV", type: .roku, ipAddress: "192.168.1.100", port: 8060)
-                try? await castCoordinator.castMedia(url: targetURL, to: targetDevice)
-
-                await MainActor.run {
-                    self.selectedMediaName = name
-                    self.isPlaying = true
+                do {
+                    try await appState.castMedia(name: name, url: targetURL)
+                    await MainActor.run {
+                        self.selectedMediaName = name
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.appState.errorMessage = error.localizedDescription
+                    }
                 }
             } else {
                 await MainActor.run {
@@ -153,7 +169,7 @@ public struct CastTabView: View {
             HStack {
                 Image(systemName: "tv.fill")
                     .foregroundColor(.blue)
-                Text("Now Casting: \(selectedMediaName ?? "")")
+                Text("Now Casting: \(selectedMediaName ?? appState.selectedDevice?.name ?? "Media")")
                     .font(.subheadline.bold())
                 Spacer()
                 Button(action: stopPlayback) {
@@ -164,14 +180,23 @@ public struct CastTabView: View {
 
             // Seek slider
             HStack {
-                Text("0:00")
+                Text(formatSeconds(appState.playbackPosition))
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Slider(value: $playbackPosition, in: 0...100, onEditingChanged: { editing in
-                    if !editing {
-                        seekTo(seconds: playbackPosition)
+                Slider(
+                    value: Binding(
+                        get: { appState.playbackPosition },
+                        set: { newPos in
+                            appState.playbackPosition = newPos
+                        }
+                    ),
+                    in: 0...100,
+                    onEditingChanged: { editing in
+                        if !editing {
+                            appState.seek(seconds: appState.playbackPosition)
+                        }
                     }
-                })
+                )
                 Text("1:40")
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -182,7 +207,15 @@ public struct CastTabView: View {
                 Image(systemName: "speaker.fill")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Slider(value: $playbackVolume, in: 0...100)
+                Slider(
+                    value: Binding(
+                        get: { appState.currentVolume },
+                        set: { newVol in
+                            appState.setVolume(sliderValue: newVol)
+                        }
+                    ),
+                    in: 0...100
+                )
                 Image(systemName: "speaker.wave.3.fill")
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -190,18 +223,26 @@ public struct CastTabView: View {
 
             // Playback controls
             HStack(spacing: 40) {
-                Button(action: { seekTo(seconds: max(0, playbackPosition - 10)) }) {
+                Button(action: {
+                    let target = max(0, appState.playbackPosition - 10)
+                    appState.seek(seconds: target)
+                }) {
                     Image(systemName: "gobackward.10")
                         .font(.title2)
                 }
 
-                Button(action: togglePlayPause) {
-                    Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                Button(action: {
+                    appState.togglePlayPause()
+                }) {
+                    Image(systemName: appState.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 44))
                         .foregroundColor(.blue)
                 }
 
-                Button(action: { seekTo(seconds: min(100, playbackPosition + 10)) }) {
+                Button(action: {
+                    let target = min(100, appState.playbackPosition + 10)
+                    appState.seek(seconds: target)
+                }) {
                     Image(systemName: "goforward.10")
                         .font(.title2)
                 }
@@ -215,30 +256,15 @@ public struct CastTabView: View {
         .padding(.bottom, 8)
     }
 
-    private func togglePlayPause() {
-        isPlaying.toggle()
-        Task {
-            if isPlaying {
-                try? await castCoordinator.play()
-            } else {
-                try? await castCoordinator.pause()
-            }
-        }
-    }
-
-    private func seekTo(seconds: Double) {
-        playbackPosition = seconds
-        Task {
-            try? await castCoordinator.seek(seconds: seconds)
-        }
-    }
-
     private func stopPlayback() {
-        isPlaying = false
         selectedMediaName = nil
-        Task {
-            try? await castCoordinator.stop()
-        }
+        appState.stopPlayback()
+    }
+
+    private func formatSeconds(_ seconds: Double) -> String {
+        let mins = Int(seconds) / 60
+        let secs = Int(seconds) % 60
+        return String(format: "%d:%02d", mins, secs)
     }
 }
 #endif

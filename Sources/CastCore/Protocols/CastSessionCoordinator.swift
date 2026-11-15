@@ -3,16 +3,32 @@ import Foundation
 import FoundationNetworking
 #endif
 
+public enum CastConnectionState: Equatable, Sendable {
+    case disconnected
+    case connecting
+    case ready
+    case streaming
+    case error(String)
+}
+
 public actor CastSessionCoordinator {
     public typealias DialHTTPPoster = @Sendable (URL, Data?) async throws -> Void
 
-    public private(set) var activeDevice: DiscoveredDevice?
+    public private(set) var connectionState: CastConnectionState = .disconnected
+    public private(set) var selectedDevice: DiscoveredDevice?
+    public var activeDevice: DiscoveredDevice? { selectedDevice }
+    public private(set) var isReconnecting: Bool = false
+    public private(set) var errorMessage: String?
+    public private(set) var activeStreamController: StreamController?
+
     public private(set) var currentMediaURL: String?
     public private(set) var isPlaying: Bool = false
     public private(set) var currentPositionSeconds: Double = 0
     public private(set) var mediaSessionId: Int?
     public private(set) var currentVolume: Double = 1.0
     public private(set) var castClient: CastV2Client?
+
+    public var onConnectionStateChanged: (@Sendable (CastConnectionState) -> Void)?
 
     private var activeTransportId: String?
     private let customCastClient: CastV2Client?
@@ -56,8 +72,128 @@ public actor CastSessionCoordinator {
         }
     }
 
+    // MARK: - State Notification
+
+    public func setOnConnectionStateChanged(_ handler: (@Sendable (CastConnectionState) -> Void)?) {
+        self.onConnectionStateChanged = handler
+    }
+
+    private func updateConnectionState(_ newState: CastConnectionState) {
+        self.connectionState = newState
+        if case .error(let msg) = newState {
+            self.errorMessage = msg
+        }
+        self.onConnectionStateChanged?(newState)
+    }
+
+    // MARK: - Device Selection
+
+    public func selectDevice(_ device: DiscoveredDevice?) async {
+        if let previous = self.selectedDevice, previous != device {
+            if self.isPlaying || self.connectionState != .disconnected {
+                try? await self.stop()
+            }
+        }
+        self.selectedDevice = device
+        self.errorMessage = nil
+        updateConnectionState(.disconnected)
+    }
+
+    // MARK: - Connection & Preparation
+
+    public func connect(to device: DiscoveredDevice) async throws {
+        self.selectedDevice = device
+        self.errorMessage = nil
+        updateConnectionState(.connecting)
+
+        switch device.type {
+        case .chromecast:
+            do {
+                let client = try await getOrCreateCastClient(for: device)
+                let isConnected = await client.isConnected
+                if !isConnected {
+                    let port = device.port == 0 ? CastConstants.defaultPort : device.port
+                    try await client.connect(host: device.ipAddress, port: port)
+                }
+
+                let transportId: String
+                if let existingTransportId = await client.activeTransportId {
+                    transportId = existingTransportId
+                } else {
+                    let launch = try await client.launchReceiver(appId: CastConstants.defaultAppId)
+                    transportId = launch.transportId
+                }
+                self.activeTransportId = transportId
+                updateConnectionState(.ready)
+            } catch {
+                let dialURLString = "http://\(device.ipAddress):8008/apps/\(CastConstants.defaultAppId)"
+                if let dialURL = URL(string: dialURLString) {
+                    do {
+                        try await sendHTTPPost(url: dialURL)
+                        updateConnectionState(.ready)
+                    } catch {
+                        let msg = "Failed to connect to \(device.name): \(error.localizedDescription)"
+                        self.errorMessage = msg
+                        updateConnectionState(.error(msg))
+                        throw error
+                    }
+                } else {
+                    let msg = "Failed to connect to \(device.name): \(error.localizedDescription)"
+                    self.errorMessage = msg
+                    updateConnectionState(.error(msg))
+                    throw error
+                }
+            }
+
+        case .roku, .dlna, .web:
+            updateConnectionState(.ready)
+        }
+    }
+
+    public func connect() async throws {
+        guard let device = selectedDevice else {
+            throw CastTransportError.notConnected
+        }
+        try await connect(to: device)
+    }
+
+    // MARK: - Screen Mirroring Lifecycle
+
+    @discardableResult
+    public func startScreenMirror(
+        streamController: StreamController,
+        networkHelper: NetworkInterfaceHelper = .shared,
+        port: Int? = nil
+    ) async throws -> String {
+        self.activeStreamController = streamController
+        let boundPort = try await streamController.start()
+        let portToUse = UInt16(port ?? Int(boundPort))
+        let (resolvedURL, _) = networkHelper.resolveStreamURL(port: portToUse, path: "stream.m3u8")
+        self.currentMediaURL = resolvedURL
+
+        if let device = selectedDevice {
+            try await castMedia(url: resolvedURL, to: device, title: "Screen Mirror")
+        }
+
+        updateConnectionState(.streaming)
+        return resolvedURL
+    }
+
+    public func stopScreenMirror(streamController: StreamController) async throws {
+        try? await self.stop()
+        await streamController.stop()
+        self.activeStreamController = nil
+        if selectedDevice != nil {
+            updateConnectionState(.ready)
+        } else {
+            updateConnectionState(.disconnected)
+        }
+    }
+
+    // MARK: - Media Casting & Playback
+
     public func castMedia(url: String, to device: DiscoveredDevice, title: String? = nil) async throws {
-        self.activeDevice = device
+        self.selectedDevice = device
         self.currentMediaURL = url
         self.isPlaying = true
         self.currentPositionSeconds = 0
@@ -65,41 +201,45 @@ public actor CastSessionCoordinator {
         switch device.type {
         case .roku:
             let launchURL = RokuECPClient.buildLaunchURL(deviceIP: device.ipAddress, mediaURL: url)
-            await sendHTTPPost(url: launchURL)
+            try? await sendHTTPPost(url: launchURL)
+            updateConnectionState(.streaming)
 
         case .dlna:
             let soap = UPnPClient.generateSetAVTransportURIPayload(mediaURL: url)
             await sendSOAP(action: "SetAVTransportURI", payload: soap, on: device)
             try? await play()
+            updateConnectionState(.streaming)
 
         case .chromecast:
             do {
                 try await castChromecastV2(url: url, to: device, title: title)
+                updateConnectionState(.streaming)
             } catch {
                 let dialURLString = "http://\(device.ipAddress):8008/apps/\(CastConstants.defaultAppId)"
                 if let dialURL = URL(string: dialURLString) {
                     let body = Data(url.utf8)
-                    await sendHTTPPost(url: dialURL, body: body)
+                    try? await sendHTTPPost(url: dialURL, body: body)
                 }
-                self.activeDevice = device
+                self.selectedDevice = device
                 self.currentMediaURL = url
                 self.isPlaying = true
                 self.currentPositionSeconds = 0
+                updateConnectionState(.streaming)
             }
 
         case .web:
-            break
+            updateConnectionState(.streaming)
         }
     }
 
     public func play() async throws {
-        guard let device = activeDevice else { return }
+        guard let device = selectedDevice else { return }
         self.isPlaying = true
 
         switch device.type {
         case .roku:
             let url = RokuECPClient.buildKeypressURL(deviceIP: device.ipAddress, key: "Play")
-            await sendHTTPPost(url: url)
+            try? await sendHTTPPost(url: url)
 
         case .dlna:
             let soap = UPnPClient.generatePlayPayload()
@@ -121,13 +261,13 @@ public actor CastSessionCoordinator {
     }
 
     public func pause() async throws {
-        guard let device = activeDevice else { return }
+        guard let device = selectedDevice else { return }
         self.isPlaying = false
 
         switch device.type {
         case .roku:
             let url = RokuECPClient.buildKeypressURL(deviceIP: device.ipAddress, key: "Play")
-            await sendHTTPPost(url: url)
+            try? await sendHTTPPost(url: url)
 
         case .dlna:
             let soap = UPnPClient.generatePausePayload()
@@ -149,14 +289,17 @@ public actor CastSessionCoordinator {
     }
 
     public func stop() async throws {
-        guard let device = activeDevice else { return }
+        guard let device = selectedDevice else {
+            updateConnectionState(.disconnected)
+            return
+        }
         self.isPlaying = false
         self.currentMediaURL = nil
 
         switch device.type {
         case .roku:
             let url = RokuECPClient.buildKeypressURL(deviceIP: device.ipAddress, key: "Back")
-            await sendHTTPPost(url: url)
+            try? await sendHTTPPost(url: url)
 
         case .dlna:
             let soap = UPnPClient.generateStopPayload()
@@ -183,10 +326,16 @@ public actor CastSessionCoordinator {
         case .web:
             break
         }
+
+        if selectedDevice != nil {
+            updateConnectionState(.ready)
+        } else {
+            updateConnectionState(.disconnected)
+        }
     }
 
     public func seek(seconds: Double) async throws {
-        guard let device = activeDevice else { return }
+        guard let device = selectedDevice else { return }
         self.currentPositionSeconds = seconds
 
         let hours = Int(seconds) / 3600
@@ -219,7 +368,7 @@ public actor CastSessionCoordinator {
         let clamped = max(0.0, min(1.0, level))
         self.currentVolume = clamped
 
-        guard let device = activeDevice, device.type == .chromecast else { return }
+        guard let device = selectedDevice, device.type == .chromecast else { return }
         let payload: [String: Any] = [
             "type": "SET_VOLUME",
             "volume": [
@@ -233,9 +382,59 @@ public actor CastSessionCoordinator {
         )
     }
 
+    // MARK: - Auto-Reconnection
+
+    public func handleUnexpectedDisconnection() async {
+        guard connectionState == .streaming else { return }
+        guard !isReconnecting else { return }
+
+        isReconnecting = true
+        updateConnectionState(.connecting)
+
+        guard let device = selectedDevice, let mediaURL = currentMediaURL else {
+            await handleReconnectionFailure(message: "TV disconnected. Streaming stopped.")
+            return
+        }
+
+        do {
+            if let client = self.castClient {
+                await client.disconnect()
+                if self.customCastClient == nil {
+                    self.castClient = nil
+                }
+            }
+            self.activeTransportId = nil
+            self.mediaSessionId = nil
+
+            try await castChromecastV2(url: mediaURL, to: device, title: "Screen Mirror")
+
+            self.isReconnecting = false
+            self.errorMessage = nil
+            updateConnectionState(.streaming)
+        } catch {
+            await handleReconnectionFailure(message: "TV disconnected. Streaming stopped.")
+        }
+    }
+
+    private func handleReconnectionFailure(message: String) async {
+        self.isReconnecting = false
+        self.errorMessage = message
+        self.isPlaying = false
+        self.currentMediaURL = nil
+        self.mediaSessionId = nil
+        self.activeTransportId = nil
+
+        if let controller = self.activeStreamController {
+            await controller.stop()
+            self.activeStreamController = nil
+        }
+
+        updateConnectionState(.error(message))
+    }
+
     // MARK: - Chromecast Helpers
 
-    private func castChromecastV2(url: String, to device: DiscoveredDevice, title: String?) async throws {
+    private func getOrCreateCastClient(for device: DiscoveredDevice) async throws -> CastV2Client {
         let client: CastV2Client
         if let custom = self.customCastClient {
             client = custom
@@ -248,6 +447,15 @@ public actor CastSessionCoordinator {
         } else {
             throw CastTransportError.connectionFailed("No CastTransport factory available for Chromecast")
         }
+
+        await client.setOnDisconnect { [weak self] in
+            await self?.handleUnexpectedDisconnection()
+        }
+        return client
+    }
+
+    private func castChromecastV2(url: String, to device: DiscoveredDevice, title: String?) async throws {
+        let client = try await getOrCreateCastClient(for: device)
 
         let isConnected = await client.isConnected
         if !isConnected {
@@ -309,7 +517,7 @@ public actor CastSessionCoordinator {
             self.mediaSessionId = sessionId
         }
 
-        self.activeDevice = device
+        self.selectedDevice = device
         self.currentMediaURL = url
         self.isPlaying = true
         self.currentPositionSeconds = 0
@@ -365,9 +573,9 @@ public actor CastSessionCoordinator {
         _ = try? await URLSession.shared.data(for: request)
     }
 
-    private func sendHTTPPost(url: URL, body: Data? = nil) async {
+    private func sendHTTPPost(url: URL, body: Data? = nil) async throws {
         if let poster = self.dialHTTPPoster {
-            try? await poster(url, body)
+            try await poster(url, body)
             return
         }
         var request = URLRequest(url: url)
@@ -375,6 +583,6 @@ public actor CastSessionCoordinator {
         if let body = body {
             request.httpBody = body
         }
-        _ = try? await URLSession.shared.data(for: request)
+        _ = try await URLSession.shared.data(for: request)
     }
 }

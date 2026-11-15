@@ -3,22 +3,58 @@ import SwiftUI
 import CastCore
 
 public struct MirrorTabView: View {
-    @State private var isStreaming = false
-    @State private var streamURL = ""
-    @State private var streamController = StreamController()
-    @State private var discoveryEngine = DiscoveryEngine()
-    @State private var subscriptionManager = SubscriptionManager()
-    @State private var discoveredDevices: [DiscoveredDevice] = []
-    @State private var selectedDevice: DiscoveredDevice?
+    @ObservedObject public var appState: CastAppState
     @State private var showPermissionModal = false
     @State private var showPaywallModal = false
     @State private var hasGrantedLocalNetwork = false
     @State private var selectedQuality = 0 // 0: Ultra-Low Latency, 1: High Definition (1080p)
-    @State private var errorMessage: String?
-    private let networkHelper: NetworkInterfaceHelper
 
-    public init(networkHelper: NetworkInterfaceHelper = NetworkInterfaceHelper()) {
-        self.networkHelper = networkHelper
+    public init(appState: CastAppState = CastAppState()) {
+        self.appState = appState
+    }
+
+    public init(appState: CastAppState? = nil, networkHelper: NetworkInterfaceHelper = NetworkInterfaceHelper()) {
+        if let state = appState {
+            self.appState = state
+        } else {
+            self.appState = CastAppState(networkHelper: networkHelper)
+        }
+    }
+
+    private var connectionStatusText: String {
+        guard appState.selectedDevice != nil else {
+            return "Tap to discover devices"
+        }
+        switch appState.connectionState {
+        case .disconnected:
+            return "Tap to discover devices"
+        case .connecting:
+            return "Connecting..."
+        case .ready:
+            return "Ready to Cast"
+        case .streaming:
+            return "Streaming Active"
+        case .error(let message):
+            return message
+        }
+    }
+
+    private var connectionStatusDotColor: Color {
+        guard appState.selectedDevice != nil else {
+            return Color.gray
+        }
+        switch appState.connectionState {
+        case .disconnected:
+            return Color.gray
+        case .connecting:
+            return Color.orange
+        case .ready:
+            return Color.blue
+        case .streaming:
+            return Color.green
+        case .error:
+            return Color.red
+        }
     }
 
     public var body: some View {
@@ -31,19 +67,19 @@ public struct MirrorTabView: View {
                     }
                 }) {
                     HStack {
-                        Image(systemName: selectedDevice?.type.systemIcon ?? "tv")
+                        Image(systemName: appState.selectedDevice?.type.systemIcon ?? "tv")
                             .foregroundColor(.blue)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(selectedDevice?.name ?? "No TV Selected")
+                            Text(appState.selectedDevice?.name ?? "No TV Selected")
                                 .font(.subheadline.bold())
                                 .foregroundColor(.primary)
-                            Text(isStreaming ? "Streaming Active" : (selectedDevice == nil ? "Tap to discover devices" : "Connected"))
+                            Text(connectionStatusText)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
                         Circle()
-                            .fill(isStreaming ? Color.green : (selectedDevice == nil ? Color.gray : Color.blue))
+                            .fill(connectionStatusDotColor)
                             .frame(width: 8, height: 8)
                     }
                     .padding()
@@ -51,6 +87,22 @@ public struct MirrorTabView: View {
                     .cornerRadius(10)
                 }
                 .padding(.horizontal)
+
+                // Error banner (e.g. "TV disconnected. Streaming stopped.")
+                if let error = appState.errorMessage {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(Color.red.opacity(0.12))
+                    .cornerRadius(8)
+                    .padding(.horizontal)
+                }
 
                 // Mirror control card
                 VStack(spacing: 14) {
@@ -69,12 +121,12 @@ public struct MirrorTabView: View {
                     .pickerStyle(.segmented)
                     .padding(.horizontal)
 
-                    if isStreaming && !streamURL.isEmpty {
+                    if appState.isStreaming && !appState.streamURL.isEmpty {
                         VStack(spacing: 4) {
                             Text("Open on PC, Mac, or Smart TV Browser:")
                                 .font(.caption.bold())
                                 .foregroundColor(.secondary)
-                            Text(streamURL)
+                            Text(appState.streamURL)
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundColor(.blue)
                                 .padding(6)
@@ -85,13 +137,13 @@ public struct MirrorTabView: View {
 
                     Button(action: handleStartMirrorAction) {
                         HStack {
-                            Image(systemName: isStreaming ? "stop.fill" : "play.fill")
-                            Text(isStreaming ? "Stop Stream" : "Start Mirror")
+                            Image(systemName: appState.isStreaming ? "stop.fill" : "play.fill")
+                            Text(appState.isStreaming ? "Stop Stream" : "Start Mirror")
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
                         .padding()
-                        .background(isStreaming ? Color.red : Color.blue)
+                        .background(appState.isStreaming ? Color.red : Color.blue)
                         .foregroundColor(.white)
                         .cornerRadius(12)
                     }
@@ -110,47 +162,45 @@ public struct MirrorTabView: View {
 
                 // Device selector list
                 DeviceSelectorView(
-                    selectedDevice: $selectedDevice,
-                    devices: discoveredDevices,
-                    isScanning: false,
+                    selectedDevice: Binding(
+                        get: { appState.selectedDevice },
+                        set: { newDev in
+                            appState.selectDevice(newDev)
+                        }
+                    ),
+                    devices: appState.discoveredDevices,
+                    isScanning: appState.isScanning,
                     onRefresh: {
-                        refreshDevices()
+                        appState.refreshDevices()
                     }
                 )
-
-                if let error = errorMessage {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundColor(.red)
-                        .padding(.horizontal)
-                }
             }
             .navigationTitle("Cast-Lite")
             .sheet(isPresented: $showPermissionModal) {
                 LocalNetworkPermissionModal(isPresented: $showPermissionModal) {
                     hasGrantedLocalNetwork = true
-                    refreshDevices()
+                    appState.refreshDevices()
                 }
             }
             .sheet(isPresented: $showPaywallModal) {
-                PaywallModal(isPresented: $showPaywallModal, subscriptionManager: subscriptionManager) {
+                PaywallModal(isPresented: $showPaywallModal, subscriptionManager: appState.subscriptionManager) {
                     executeStartStreaming()
                 }
             }
         }
         .onAppear {
-            loadInitialDevices()
+            appState.startDiscovery()
         }
     }
 
     private func handleStartMirrorAction() {
-        if isStreaming {
+        if appState.isStreaming {
             executeStopStreaming()
             return
         }
 
         Task {
-            let entitled = await subscriptionManager.isEntitled
+            let entitled = await appState.subscriptionManager.isEntitled
             if entitled {
                 executeStartStreaming()
             } else {
@@ -164,20 +214,10 @@ public struct MirrorTabView: View {
     private func executeStartStreaming() {
         Task {
             do {
-                let port = try await streamController.start()
-                let (url, resolution) = networkHelper.resolveStreamURL(port: port)
-                await MainActor.run {
-                    self.isStreaming = true
-                    self.streamURL = url
-                    if resolution.isFallback {
-                        self.errorMessage = resolution.warningMessage
-                    } else {
-                        self.errorMessage = nil
-                    }
-                }
+                _ = try await appState.startScreenMirror()
             } catch {
                 await MainActor.run {
-                    self.errorMessage = "Failed to start server: \(error.localizedDescription)"
+                    appState.errorMessage = "Failed to start streaming: \(error.localizedDescription)"
                 }
             }
         }
@@ -185,43 +225,7 @@ public struct MirrorTabView: View {
 
     private func executeStopStreaming() {
         Task {
-            await streamController.stop()
-            await MainActor.run {
-                self.isStreaming = false
-                self.streamURL = ""
-                self.errorMessage = nil
-            }
-        }
-    }
-
-    private func loadInitialDevices() {
-        Task {
-            await discoveryEngine.setOnDevicesChanged { devs in
-                Task { @MainActor in
-                    self.discoveredDevices = devs
-                }
-            }
-            await discoveryEngine.startDiscovery()
-            let devs = await discoveryEngine.devices
-            await MainActor.run {
-                self.discoveredDevices = devs
-            }
-        }
-    }
-
-    private func refreshDevices() {
-        Task {
-            await discoveryEngine.setOnDevicesChanged { devs in
-                Task { @MainActor in
-                    self.discoveredDevices = devs
-                }
-            }
-            await discoveryEngine.startDiscovery()
-            await discoveryEngine.sendAllSSDPMSearches()
-            let devs = await discoveryEngine.devices
-            await MainActor.run {
-                self.discoveredDevices = devs
-            }
+            await appState.stopScreenMirror()
         }
     }
 }

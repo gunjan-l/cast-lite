@@ -1,20 +1,24 @@
 #if canImport(SwiftUI)
 import SwiftUI
+import CastCore
 
 public struct MainTabView: View {
+    @StateObject private var appState: CastAppState
     @State private var selectedTab: Int = 0
 
-    public init() {}
+    public init(appState: CastAppState = CastAppState()) {
+        _appState = StateObject(wrappedValue: appState)
+    }
 
     public var body: some View {
         TabView(selection: $selectedTab) {
-            MirrorTabView()
+            MirrorTabView(appState: appState)
                 .tabItem {
                     Label("Mirror", systemImage: "tv.and.mediabox")
                 }
                 .tag(0)
 
-            CastTabView()
+            CastTabView(appState: appState)
                 .tabItem {
                     Label("Cast", systemImage: "photo.on.rectangle.angled")
                 }
@@ -26,6 +30,7 @@ public struct MainTabView: View {
                 }
                 .tag(2)
         }
+        .environmentObject(appState)
         .accentColor(.blue)
     }
 }
