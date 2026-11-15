@@ -99,7 +99,7 @@ public struct MirrorTabView: View {
                         Text("iOS Screen Mirror:")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        BroadcastPickerView(preferredExtension: "com.castlite.broadcast")
+                        BroadcastPickerView(preferredExtension: "com.castlite.app.broadcast")
                     }
                     .padding(.horizontal)
                 }

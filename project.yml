@@ -17,11 +17,13 @@ targets:
   CastLite:
     type: application
     platform: iOS
+    bundleId: com.castlite.app
     sources:
       - path: Sources/CastLiteApp
     dependencies:
       - target: CastCore
       - target: CastLiteBroadcastExtension
+        embed: true
     info:
       path: Sources/CastLiteApp/Info.plist
       properties:
@@ -37,6 +39,7 @@ targets:
   CastLiteBroadcastExtension:
     type: app-extension
     platform: iOS
+    bundleId: com.castlite.app.broadcast
     sources:
       - path: Sources/CastLiteBroadcastExtension
     dependencies:
@@ -49,4 +52,4 @@ targets:
         CFBundleVersion: "1"
         NSExtension:
           NSExtensionPointIdentifier: "com.apple.broadcast-services-upload"
-          NSExtensionPrincipalClass: "SampleHandler"
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).SampleHandler"
