@@ -202,7 +202,7 @@ public final class CastAppState: ObservableObject {
                     self?.discoveredDevices = devs
                 }
             }
-            await discoveryEngine.startDiscovery()
+            await discoveryEngine.restartDiscovery()
             await discoveryEngine.sendAllSSDPMSearches()
             let devs = await discoveryEngine.devices
             self.discoveredDevices = devs

@@ -74,7 +74,7 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
             self.lock.lock()
             self.browser = browser
             self.lock.unlock()
-            browser.searchForServices(ofType: "_googlecast._tcp.", inDomain: "local.")
+            browser.searchForServices(ofType: "_googlecast._tcp.", inDomain: "")
         }
     }
 

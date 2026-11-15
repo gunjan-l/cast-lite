@@ -60,6 +60,9 @@ public struct HTTPResponse: Sendable {
         if finalHeaders["Connection"] == nil && finalHeaders["connection"] == nil {
             finalHeaders["Connection"] = "close"
         }
+        if finalHeaders["Access-Control-Allow-Origin"] == nil && finalHeaders["access-control-allow-origin"] == nil {
+            finalHeaders["Access-Control-Allow-Origin"] = "*"
+        }
         for (k, v) in finalHeaders {
             headerLines.append("\(k): \(v)")
         }

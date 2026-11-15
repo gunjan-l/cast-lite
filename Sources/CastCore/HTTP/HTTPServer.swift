@@ -215,6 +215,20 @@ public actor HTTPServer {
             return
         }
 
+        if request.method == "OPTIONS" {
+            let optionsResponse = HTTPResponse(
+                statusCode: 204,
+                statusText: "No Content",
+                headers: [
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "*"
+                ]
+            )
+            _ = sendResponse(socket: socket, response: optionsResponse)
+            return
+        }
+
         let cleanPath = request.path.components(separatedBy: "?").first ?? request.path
         let response: HTTPResponse
         if let handler = routes[cleanPath] {

@@ -433,6 +433,24 @@ final class DiscoveryTests: XCTestCase {
         XCTAssertTrue(parsed.isEmpty)
     }
 
+    func testRestartDiscoveryRestartsBonjourAndProbes() async {
+        let mockBonjour = MockBonjourDiscoveryProvider()
+        let mockTransport = MockSSDPTransport()
+        let engine = DiscoveryEngine(transport: mockTransport, bonjourProvider: mockBonjour)
+
+        await engine.startDiscovery()
+        XCTAssertTrue(mockBonjour.isBrowsing)
+        let initialSent = mockTransport.sentPackets.count
+
+        // restartDiscovery should cycle browsing and trigger fresh M-SEARCH burst
+        await engine.restartDiscovery()
+        XCTAssertTrue(mockBonjour.isBrowsing)
+        let afterSent = mockTransport.sentPackets.count
+        XCTAssertGreaterThan(afterSent, initialSent)
+
+        await engine.stopDiscovery()
+    }
+
     func testNegativeProbeIntervalClamped() async {
         let mockTransport = MockSSDPTransport()
         let engine = DiscoveryEngine(probeInterval: -5.0, transport: mockTransport)

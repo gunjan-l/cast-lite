@@ -121,6 +121,10 @@ public final class DefaultSSDPTransport: SSDPTransport, @unchecked Sendable {
         var multicastIf = ifAddr
         _ = setsockopt(sock, proto, IP_MULTICAST_IF, &multicastIf, socklen_t(MemoryLayout<in_addr>.size))
 
+        // Set multicast TTL to 4 so discovery packets traverse local mesh / multi-AP subnets
+        var ttl: u_char = 4
+        setsockopt(sock, proto, IP_MULTICAST_TTL, &ttl, socklen_t(MemoryLayout<u_char>.size))
+
         var boundAddr = sockaddr_in()
         var len = socklen_t(MemoryLayout<sockaddr_in>.size)
         var boundPort = port
@@ -154,13 +158,17 @@ public final class DefaultSSDPTransport: SSDPTransport, @unchecked Sendable {
         addr.sin_port = port.bigEndian
         addr.sin_addr.s_addr = inet_addr(toHost)
 
+        var sentBytes: Int = -1
         data.withUnsafeBytes { rawPtr in
             guard let baseAddr = rawPtr.baseAddress else { return }
             withUnsafePointer(to: &addr) { saPtr in
                 saPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { destAddr in
-                    _ = sendto(sock, baseAddr, data.count, 0, destAddr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    sentBytes = sendto(sock, baseAddr, data.count, 0, destAddr, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
             }
+        }
+        if sentBytes < 0 {
+            try sendViaTempSocket(data: data, toHost: toHost, port: port)
         }
     }
 
@@ -194,6 +202,9 @@ public final class DefaultSSDPTransport: SSDPTransport, @unchecked Sendable {
         #endif
         var multicastIf = ifAddr
         _ = setsockopt(sock, proto, IP_MULTICAST_IF, &multicastIf, socklen_t(MemoryLayout<in_addr>.size))
+
+        var ttl: u_char = 4
+        setsockopt(sock, proto, IP_MULTICAST_TTL, &ttl, socklen_t(MemoryLayout<u_char>.size))
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -346,7 +357,7 @@ public actor DiscoveryEngine {
     private var onDevicesChanged: (@Sendable ([DiscoveredDevice]) -> Void)?
 
     public init(
-        offlineTimeout: TimeInterval = 15.0,
+        offlineTimeout: TimeInterval = 180.0,
         probeInterval: TimeInterval = 4.0,
         transport: SSDPTransport = DefaultSSDPTransport(),
         bonjourProvider: (any BonjourDiscoveryProviding)? = DefaultBonjourDiscoveryProvider()
@@ -437,8 +448,10 @@ public actor DiscoveryEngine {
                     }
                 } catch {
                     guard await self.isSearching else { break }
-                    await self.handleSocketError(error)
-                    break
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    guard await self.isSearching else { break }
+                    _ = try? transport.bind(port: 1900)
+                    continue
                 }
             }
         }
@@ -453,6 +466,11 @@ public actor DiscoveryEngine {
                 await self.sendAllSSDPMSearches()
             }
         }
+    }
+
+    public func restartDiscovery() {
+        stopDiscovery()
+        startDiscovery()
     }
 
     public func stopDiscovery() {

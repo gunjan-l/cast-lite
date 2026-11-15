@@ -53,7 +53,28 @@ final class HTTPServerTests: XCTestCase {
         XCTAssertTrue(formattedString.contains("HTTP/1.1 200 OK\r\n"))
         XCTAssertTrue(formattedString.contains("Content-Type: text/plain\r\n"))
         XCTAssertTrue(formattedString.contains("Content-Length: 15\r\n"))
+        XCTAssertTrue(formattedString.contains("Access-Control-Allow-Origin: *\r\n"))
         XCTAssertTrue(formattedString.hasSuffix("\r\n\r\nHello Cast-Lite"))
+    }
+
+    func testHTTPServerOptionsPreflightHandling() async throws {
+        let server = HTTPServer(port: 0)
+        let boundPort = try await server.start()
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(boundPort)/stream.m3u8")!)
+        request.httpMethod = "OPTIONS"
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            XCTFail("Response is not HTTPURLResponse")
+            return
+        }
+
+        XCTAssertEqual(httpResponse.statusCode, 204)
+        XCTAssertEqual(httpResponse.value(forHTTPHeaderField: "Access-Control-Allow-Origin"), "*")
+        XCTAssertNotNil(httpResponse.value(forHTTPHeaderField: "Access-Control-Allow-Methods"))
+
+        await server.stop()
     }
 
     func testHTTPServerStartAndHandleStatus() async throws {
