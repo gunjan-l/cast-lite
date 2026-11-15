@@ -1,0 +1,62 @@
+workflows:
+  ios-development:
+    name: Build iOS Development IPA
+    instance_type: mac_mini_m1
+    max_build_duration: 30
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen
+      - name: Generate Xcode Project
+        script: |
+          xcodegen generate
+      - name: Build & Package Development IPA
+        script: |
+          xcodebuild archive \
+            -project CastLite.xcodeproj \
+            -scheme CastLite \
+            -configuration Debug \
+            -destination "generic/platform=iOS" \
+            -archivePath build/CastLite.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+          mkdir -p Payload
+          cp -r build/CastLite.xcarchive/Products/Applications/CastLite.app Payload/
+          zip -r CastLite-Dev.ipa Payload
+          rm -rf Payload
+    artifacts:
+      - CastLite-Dev.ipa
+
+  ios-production:
+    name: Build iOS Production IPA
+    instance_type: mac_mini_m1
+    max_build_duration: 30
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen
+      - name: Generate Xcode Project
+        script: |
+          xcodegen generate
+      - name: Build & Package Production IPA
+        script: |
+          xcodebuild archive \
+            -project CastLite.xcodeproj \
+            -scheme CastLite \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/CastLite.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+          mkdir -p Payload
+          cp -r build/CastLite.xcarchive/Products/Applications/CastLite.app Payload/
+          zip -r CastLite-Release.ipa Payload
+          rm -rf Payload
+    artifacts:
+      - CastLite-Release.ipa
