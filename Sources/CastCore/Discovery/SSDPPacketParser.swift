@@ -83,12 +83,47 @@ public enum MDNSParser {
     public static func parseChromecast(name: String, ipAddress: String, port: UInt16 = 8009) -> DiscoveredDevice {
         return DiscoveredDevice(
             id: "chromecast-\(ipAddress):\(port)",
-            name: name,
+            name: name.isEmpty ? "Chromecast" : name,
             type: .chromecast,
             ipAddress: ipAddress,
             port: port,
             locationURL: nil,
             lastSeen: Date()
         )
+    }
+
+    public static func parseTXTRecord(data: Data) -> [String: String] {
+        var result: [String: String] = [:]
+        #if canImport(Darwin)
+        let dict = NetService.dictionary(fromTXTRecord: data)
+        for (k, v) in dict {
+            if let str = String(data: v, encoding: .utf8) {
+                result[k] = str
+            }
+        }
+        if !result.isEmpty {
+            return result
+        }
+        #endif
+
+        var offset = 0
+        let bytes = [UInt8](data)
+        while offset < bytes.count {
+            let len = Int(bytes[offset])
+            offset += 1
+            guard offset + len <= bytes.count else { break }
+            let itemData = Data(bytes[offset..<(offset + len)])
+            if let itemStr = String(data: itemData, encoding: .utf8) {
+                if let eqIdx = itemStr.firstIndex(of: "=") {
+                    let key = String(itemStr[..<eqIdx])
+                    let val = String(itemStr[itemStr.index(after: eqIdx)...])
+                    result[key] = val
+                } else {
+                    result[itemStr] = ""
+                }
+            }
+            offset += len
+        }
+        return result
     }
 }

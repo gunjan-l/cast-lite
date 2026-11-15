@@ -202,7 +202,6 @@ public struct MirrorTabView: View {
                 }
             }
             await discoveryEngine.startDiscovery()
-            await discoveryEngine.sendSSDPMSearch()
             let devs = await discoveryEngine.devices
             await MainActor.run {
                 self.discoveredDevices = devs
@@ -218,7 +217,7 @@ public struct MirrorTabView: View {
                 }
             }
             await discoveryEngine.startDiscovery()
-            await discoveryEngine.sendSSDPMSearch()
+            await discoveryEngine.sendAllSSDPMSearches()
             let devs = await discoveryEngine.devices
             await MainActor.run {
                 self.discoveredDevices = devs

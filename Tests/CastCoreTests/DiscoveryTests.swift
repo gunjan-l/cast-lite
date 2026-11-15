@@ -251,4 +251,91 @@ final class DiscoveryTests: XCTestCase {
         let devices = await engine.devices
         XCTAssertEqual(devices.first?.name, "Living Room OLED")
     }
+
+    func testSendAllSSDPMSearchesSendsMultipleTargets() async {
+        let mockTransport = MockSSDPTransport()
+        let engine = DiscoveryEngine(transport: mockTransport)
+
+        await engine.sendAllSSDPMSearches()
+
+        XCTAssertEqual(mockTransport.sentPackets.count, 4)
+        let payloads = mockTransport.sentPackets.compactMap { String(data: $0.data, encoding: .utf8) }
+
+        XCTAssertTrue(payloads.contains { $0.contains("ST: ssdp:all") })
+        XCTAssertTrue(payloads.contains { $0.contains("ST: upnp:rootdevice") })
+        XCTAssertTrue(payloads.contains { $0.contains("ST: urn:schemas-upnp-org:device:MediaRenderer:1") })
+        XCTAssertTrue(payloads.contains { $0.contains("ST: roku:ecp") })
+    }
+
+    func testPeriodicProbeCadence() async {
+        let mockTransport = MockSSDPTransport()
+        let engine = DiscoveryEngine(probeInterval: 0.05, transport: mockTransport)
+
+        await engine.startDiscovery()
+
+        // Wait for initial burst + at least 1-2 periodic probe cycles
+        try? await Task.sleep(nanoseconds: 120_000_000)
+
+        await engine.stopDiscovery()
+
+        // Initial burst = 4, after cycles should be at least 8
+        XCTAssertGreaterThanOrEqual(mockTransport.sentPackets.count, 8)
+    }
+
+    func testDefaultSSDPTransportUsesNetworkHelperInterface() throws {
+        let mockProvider = MockNetworkInterfaceProvider(interfaces: [
+            NetworkInterface(name: "en0", address: "127.0.0.1", isIPv4: true, isUp: true, isLoopback: false)
+        ])
+        let helper = NetworkInterfaceHelper(provider: mockProvider)
+        let transport = DefaultSSDPTransport(networkHelper: helper)
+
+        let port = try transport.bind(port: 0)
+        XCTAssertGreaterThan(port, 0)
+        transport.close()
+    }
+
+    func testBonjourChromecastDiscoveryIntegration() async {
+        let mockBonjour = MockBonjourDiscoveryProvider()
+        let mockTransport = MockSSDPTransport()
+        let engine = DiscoveryEngine(transport: mockTransport, bonjourProvider: mockBonjour)
+
+        let expectation = expectation(description: "Chromecast device discovered via Bonjour")
+        await engine.setOnDevicesChanged { devices in
+            if devices.contains(where: { $0.id == "chromecast-192.168.1.55:8009" }) {
+                expectation.fulfill()
+            }
+        }
+
+        await engine.startDiscovery()
+        XCTAssertTrue(mockBonjour.isBrowsing)
+
+        let chromecast = MDNSParser.parseChromecast(name: "Basement TV", ipAddress: "192.168.1.55", port: 8009)
+        mockBonjour.simulateDeviceFound(chromecast)
+
+        await fulfillment(of: [expectation], timeout: 2.0)
+
+        let devices = await engine.devices
+        XCTAssertEqual(devices.count, 1)
+        XCTAssertEqual(devices.first?.name, "Basement TV")
+        XCTAssertEqual(devices.first?.type, .chromecast)
+
+        await engine.stopDiscovery()
+        XCTAssertFalse(mockBonjour.isBrowsing)
+    }
+
+    func testMDNSTXTRecordParsing() {
+        // Construct raw DNS-SD TXT payload: <len>fn=Living Room<len>md=Chromecast Ultra
+        var rawData = Data()
+        let item1 = "fn=Living Room"
+        rawData.append(UInt8(item1.utf8.count))
+        rawData.append(Data(item1.utf8))
+
+        let item2 = "md=Chromecast Ultra"
+        rawData.append(UInt8(item2.utf8.count))
+        rawData.append(Data(item2.utf8))
+
+        let parsed = MDNSParser.parseTXTRecord(data: rawData)
+        XCTAssertEqual(parsed["fn"], "Living Room")
+        XCTAssertEqual(parsed["md"], "Chromecast Ultra")
+    }
 }

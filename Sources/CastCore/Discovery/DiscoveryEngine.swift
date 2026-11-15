@@ -16,8 +16,15 @@ public final class DefaultSSDPTransport: SSDPTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var socketFD: Int32 = -1
     private var isClosed = false
+    private let networkHelper: NetworkInterfaceHelper
 
-    public init() {}
+    public init() {
+        self.networkHelper = .shared
+    }
+
+    public init(networkHelper: NetworkInterfaceHelper) {
+        self.networkHelper = networkHelper
+    }
 
     public func bind(port: UInt16 = 1900) throws -> UInt16 {
         lock.lock()
@@ -89,16 +96,30 @@ public final class DefaultSSDPTransport: SSDPTransport, @unchecked Sendable {
             throw POSIXError(POSIXErrorCode(rawValue: err) ?? .EADDRINUSE)
         }
 
-        // Join SSDP multicast group 239.255.255.250
-        var mreq = ip_mreq()
-        mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250")
-        mreq.imr_interface.s_addr = in_addr_t(0)
+        var ifAddr = in_addr()
+        if let wifiIP = networkHelper.getIPv4Address(for: "en0") {
+            ifAddr.s_addr = inet_addr(wifiIP)
+        } else if let alt = networkHelper.getFirstNonLoopbackIPv4Address() {
+            ifAddr.s_addr = inet_addr(alt.address)
+        } else {
+            ifAddr.s_addr = in_addr_t(0)
+        }
+
         #if os(Linux)
         let proto = Int32(IPPROTO_IP)
         #else
         let proto = IPPROTO_IP
         #endif
+
+        // Join SSDP multicast group 239.255.255.250 on the selected interface
+        var mreq = ip_mreq()
+        mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250")
+        mreq.imr_interface = ifAddr
         _ = setsockopt(sock, proto, IP_ADD_MEMBERSHIP, &mreq, socklen_t(MemoryLayout<ip_mreq>.size))
+
+        // Pin outgoing multicast packets to chosen network interface
+        var multicastIf = ifAddr
+        _ = setsockopt(sock, proto, IP_MULTICAST_IF, &multicastIf, socklen_t(MemoryLayout<in_addr>.size))
 
         var boundAddr = sockaddr_in()
         var len = socklen_t(MemoryLayout<sockaddr_in>.size)
@@ -157,6 +178,22 @@ public final class DefaultSSDPTransport: SSDPTransport, @unchecked Sendable {
 
         var broadcast: Int32 = 1
         setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout<Int32>.size))
+
+        var ifAddr = in_addr()
+        if let wifiIP = networkHelper.getIPv4Address(for: "en0") {
+            ifAddr.s_addr = inet_addr(wifiIP)
+        } else if let alt = networkHelper.getFirstNonLoopbackIPv4Address() {
+            ifAddr.s_addr = inet_addr(alt.address)
+        } else {
+            ifAddr.s_addr = in_addr_t(0)
+        }
+        #if os(Linux)
+        let proto = Int32(IPPROTO_IP)
+        #else
+        let proto = IPPROTO_IP
+        #endif
+        var multicastIf = ifAddr
+        _ = setsockopt(sock, proto, IP_MULTICAST_IF, &multicastIf, socklen_t(MemoryLayout<in_addr>.size))
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -292,18 +329,32 @@ public actor DiscoveryEngine {
     public private(set) var isSearching: Bool = false
     public private(set) var boundPort: UInt16 = 0
 
+    public static let searchTargets: [String] = [
+        "ssdp:all",
+        "upnp:rootdevice",
+        "urn:schemas-upnp-org:device:MediaRenderer:1",
+        "roku:ecp"
+    ]
+
     private let offlineTimeout: TimeInterval
+    private let probeInterval: TimeInterval
     private let transport: SSDPTransport
+    private let bonjourProvider: (any BonjourDiscoveryProviding)?
     private var pruneTask: Task<Void, Never>?
     private var listenerTask: Task<Void, Never>?
+    private var probeTask: Task<Void, Never>?
     private var onDevicesChanged: (@Sendable ([DiscoveredDevice]) -> Void)?
 
     public init(
         offlineTimeout: TimeInterval = 15.0,
-        transport: SSDPTransport = DefaultSSDPTransport()
+        probeInterval: TimeInterval = 4.0,
+        transport: SSDPTransport = DefaultSSDPTransport(),
+        bonjourProvider: (any BonjourDiscoveryProviding)? = DefaultBonjourDiscoveryProvider()
     ) {
         self.offlineTimeout = offlineTimeout
+        self.probeInterval = probeInterval
         self.transport = transport
+        self.bonjourProvider = bonjourProvider
     }
 
     public func setOnDevicesChanged(_ callback: (@Sendable ([DiscoveredDevice]) -> Void)?) {
@@ -352,6 +403,13 @@ public actor DiscoveryEngine {
             // Transport error during bind handled gracefully
         }
 
+        // Start Bonjour discovery for Chromecast
+        bonjourProvider?.startBrowsing { [weak self] device in
+            Task { [weak self] in
+                await self?.addOrUpdateDevice(device)
+            }
+        }
+
         pruneTask = Task.detached { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -379,15 +437,29 @@ public actor DiscoveryEngine {
                 }
             }
         }
+
+        sendAllSSDPMSearches()
+
+        let intervalNanos = UInt64(probeInterval * 1_000_000_000)
+        probeTask = Task.detached { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: intervalNanos)
+                guard let self = self, await self.isSearching else { break }
+                await self.sendAllSSDPMSearches()
+            }
+        }
     }
 
     public func stopDiscovery() {
         guard isSearching else { return }
         isSearching = false
+        bonjourProvider?.stopBrowsing()
         pruneTask?.cancel()
         pruneTask = nil
         listenerTask?.cancel()
         listenerTask = nil
+        probeTask?.cancel()
+        probeTask = nil
         transport.close()
     }
 
@@ -401,9 +473,15 @@ public actor DiscoveryEngine {
         }
     }
 
-    public func sendSSDPMSearch() {
-        let mSearch = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n"
+    public func sendSSDPMSearch(target: String = "ssdp:all") {
+        let mSearch = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: \(target)\r\n\r\n"
         let data = Data(mSearch.utf8)
         try? transport.sendMulticast(data: data, toHost: "239.255.255.250", port: 1900)
+    }
+
+    public func sendAllSSDPMSearches() {
+        for target in Self.searchTargets {
+            sendSSDPMSearch(target: target)
+        }
     }
 }
