@@ -118,9 +118,13 @@ public actor StreamController {
     private func startLiveHLSLoop() {
         liveSegmentTask = Task.detached { [weak self] in
             var currentPts: UInt64 = 450000
-            while true {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard let self = self else { break }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    break
+                }
+                guard !Task.isCancelled, let self = self else { break }
                 let active = await self.isStreaming
                 guard active else { break }
 
@@ -132,10 +136,10 @@ public actor StreamController {
 
     public func stop() async {
         guard isStreaming else { return }
+        self.isStreaming = false
         liveSegmentTask?.cancel()
         liveSegmentTask = nil
         await server.stop()
-        self.isStreaming = false
         self.serverPort = 0
     }
 }

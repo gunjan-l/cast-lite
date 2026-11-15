@@ -114,22 +114,18 @@ public actor HTTPServer {
         var boundAddr = sockaddr_storage()
         var len = socklen_t(MemoryLayout<sockaddr_storage>.size)
         let getSockResult = withUnsafeMutablePointer(to: &boundAddr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                getsockname(sock, saPtr, &len)
-            }
+            getsockname(sock, UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: sockaddr.self), &len)
         }
         if getSockResult == 0 {
             if boundAddr.ss_family == sa_family_t(AF_INET6) {
                 return withUnsafePointer(to: &boundAddr) { ptr in
-                    ptr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { sin6 in
-                        UInt16(bigEndian: sin6.pointee.sin6_port)
-                    }
+                    let sin6 = UnsafeRawPointer(ptr).assumingMemoryBound(to: sockaddr_in6.self)
+                    return UInt16(bigEndian: sin6.pointee.sin6_port)
                 }
             } else {
                 return withUnsafePointer(to: &boundAddr) { ptr in
-                    ptr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { sin in
-                        UInt16(bigEndian: sin.pointee.sin_port)
-                    }
+                    let sin = UnsafeRawPointer(ptr).assumingMemoryBound(to: sockaddr_in.self)
+                    return UInt16(bigEndian: sin.pointee.sin_port)
                 }
             }
         }
@@ -159,9 +155,7 @@ public actor HTTPServer {
                 var clientAddr = sockaddr_storage()
                 var clientLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
                 let clientSock = withUnsafeMutablePointer(to: &clientAddr) { ptr in
-                    ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                        accept(sock, saPtr, &clientLen)
-                    }
+                    accept(sock, UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: sockaddr.self), &clientLen)
                 }
 
                 if clientSock < 0 {

@@ -209,4 +209,46 @@ final class DiscoveryTests: XCTestCase {
         receiver.close()
         sender.close()
     }
+
+    func testGenericDLNASSDPPacketYieldsSmartTVNotSmartTVTV() {
+        let rawSSDP = """
+        NOTIFY * HTTP/1.1\r
+        HOST: 239.255.255.250:1900\r
+        NT: urn:schemas-upnp-org:device:MediaRenderer:1\r
+        NTS: ssdp:alive\r
+        USN: uuid:generic-tv-123::urn:schemas-upnp-org:device:MediaRenderer:1\r
+        Location: http://192.168.1.120:8080/description.xml\r
+        Server: Linux/4.1 UPnP/1.0\r
+        \r
+        """
+
+        let device = SSDPPacketParser.parse(packet: rawSSDP, senderIP: "192.168.1.120")
+        XCTAssertNotNil(device)
+        XCTAssertEqual(device?.name, "Smart TV")
+        XCTAssertEqual(device?.controlURL?.absoluteString, "http://192.168.1.120:8080/upnp/control/AVTransport1")
+    }
+
+    func testDiscoveryEnginePreservesExistingDeviceNameOnGenericUpdate() async {
+        let engine = DiscoveryEngine()
+        let customDevice = DiscoveredDevice(
+            id: "uuid:living-room-tv",
+            name: "Living Room OLED",
+            type: .dlna(brand: "Smart TV"),
+            ipAddress: "192.168.1.120",
+            port: 8080
+        )
+        await engine.addOrUpdateDevice(customDevice)
+
+        let genericUpdate = DiscoveredDevice(
+            id: "uuid:living-room-tv",
+            name: "Smart TV",
+            type: .dlna(brand: "Smart TV"),
+            ipAddress: "192.168.1.120",
+            port: 8080
+        )
+        await engine.addOrUpdateDevice(genericUpdate)
+
+        let devices = await engine.devices
+        XCTAssertEqual(devices.first?.name, "Living Room OLED")
+    }
 }

@@ -61,9 +61,6 @@ public struct DiscoveredDevice: Identifiable, Hashable, Sendable, Equatable {
     }
 
     public var controlURL: URL? {
-        if let locationURL = locationURL {
-            return locationURL
-        }
         return URL(string: "http://\(ipAddress):\(port)/upnp/control/AVTransport1")
     }
 

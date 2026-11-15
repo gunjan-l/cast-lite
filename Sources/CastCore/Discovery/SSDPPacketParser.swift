@@ -62,9 +62,11 @@ public enum SSDPPacketParser {
                 brand = "Smart TV"
             }
 
+            let deviceName = (brand == "Smart TV") ? "Smart TV" : "\(brand) TV"
+
             return DiscoveredDevice(
                 id: usn,
-                name: "\(brand) TV",
+                name: deviceName,
                 type: .dlna(brand: brand),
                 ipAddress: senderIP,
                 port: port,
