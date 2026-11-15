@@ -2,7 +2,8 @@ import Foundation
 
 public enum SSDPPacketParser {
     public static func parse(packet: String, senderIP: String) -> DiscoveredDevice? {
-        let lines = packet.components(separatedBy: "\r\n")
+        let normalized = packet.replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
         guard let firstLine = lines.first?.uppercased(),
               firstLine.contains("200 OK") || firstLine.contains("NOTIFY") else {
             return nil
@@ -16,9 +17,14 @@ public enum SSDPPacketParser {
             headers[key] = value
         }
 
-        guard let usn = headers["USN"] ?? headers["NT"] ?? headers["ST"] else {
+        if let nts = headers["NTS"], nts.lowercased().contains("byebye") {
             return nil
         }
+
+        guard let rawUsn = headers["USN"] ?? headers["NT"] ?? headers["ST"] else {
+            return nil
+        }
+        let usn = rawUsn.components(separatedBy: "::").first ?? rawUsn
 
         let st = headers["ST"] ?? ""
         let nt = headers["NT"] ?? ""
@@ -111,13 +117,16 @@ public enum MDNSParser {
         while offset < bytes.count {
             let len = Int(bytes[offset])
             offset += 1
+            guard len > 0 else { continue }
             guard offset + len <= bytes.count else { break }
             let itemData = Data(bytes[offset..<(offset + len)])
-            if let itemStr = String(data: itemData, encoding: .utf8) {
+            if let itemStr = String(data: itemData, encoding: .utf8), !itemStr.isEmpty {
                 if let eqIdx = itemStr.firstIndex(of: "=") {
                     let key = String(itemStr[..<eqIdx])
                     let val = String(itemStr[itemStr.index(after: eqIdx)...])
-                    result[key] = val
+                    if !key.isEmpty {
+                        result[key] = val
+                    }
                 } else {
                     result[itemStr] = ""
                 }

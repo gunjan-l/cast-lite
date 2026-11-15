@@ -38,7 +38,7 @@ final class DiscoveryTests: XCTestCase {
 
         let device = SSDPPacketParser.parse(packet: rawSSDP, senderIP: "192.168.1.105")
         XCTAssertNotNil(device)
-        XCTAssertEqual(device?.id, "uuid:01234567-89ab-cdef-0123-456789abcdef::urn:schemas-upnp-org:device:MediaRenderer:1")
+        XCTAssertEqual(device?.id, "uuid:01234567-89ab-cdef-0123-456789abcdef")
         XCTAssertEqual(device?.ipAddress, "192.168.1.105")
         XCTAssertEqual(device?.port, 7676)
         XCTAssertEqual(device?.type, .dlna(brand: "Samsung"))
@@ -337,5 +337,122 @@ final class DiscoveryTests: XCTestCase {
         let parsed = MDNSParser.parseTXTRecord(data: rawData)
         XCTAssertEqual(parsed["fn"], "Living Room")
         XCTAssertEqual(parsed["md"], "Chromecast Ultra")
+    }
+
+    func testBonjourChromecastNotPrunedWhileSearching() async {
+        let mockBonjour = MockBonjourDiscoveryProvider()
+        let mockTransport = MockSSDPTransport()
+        let engine = DiscoveryEngine(offlineTimeout: 0.1, transport: mockTransport, bonjourProvider: mockBonjour)
+
+        await engine.startDiscovery()
+        let chromecast = MDNSParser.parseChromecast(name: "Cast TV", ipAddress: "192.168.1.99")
+        await engine.addOrUpdateDevice(chromecast)
+
+        var devices = await engine.devices
+        XCTAssertEqual(devices.count, 1)
+
+        // Wait past offlineTimeout
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        await engine.pruneStaleDevices()
+
+        // Chromecast should NOT be pruned while discovery is searching
+        devices = await engine.devices
+        XCTAssertEqual(devices.count, 1)
+        XCTAssertEqual(devices.first?.id, "chromecast-192.168.1.99:8009")
+
+        await engine.stopDiscovery()
+    }
+
+    func testSSDPParserNormalizesUSNBaseUUID() {
+        let packet1 = """
+        HTTP/1.1 200 OK\r
+        ST: urn:schemas-upnp-org:device:MediaRenderer:1\r
+        USN: uuid:1111-2222-3333::urn:schemas-upnp-org:device:MediaRenderer:1\r
+        Server: Samsung-Linux/4.1 UPnP/1.0\r
+        \r
+        """
+        let packet2 = """
+        HTTP/1.1 200 OK\r
+        ST: upnp:rootdevice\r
+        USN: uuid:1111-2222-3333::upnp:rootdevice\r
+        Server: Samsung-Linux/4.1 UPnP/1.0\r
+        \r
+        """
+        let dev1 = SSDPPacketParser.parse(packet: packet1, senderIP: "192.168.1.100")
+        let dev2 = SSDPPacketParser.parse(packet: packet2, senderIP: "192.168.1.100")
+
+        XCTAssertNotNil(dev1)
+        XCTAssertNotNil(dev2)
+        XCTAssertEqual(dev1?.id, "uuid:1111-2222-3333")
+        XCTAssertEqual(dev2?.id, "uuid:1111-2222-3333")
+    }
+
+    func testParseSSDPWithUnixNewlines() {
+        let unixPacket = "HTTP/1.1 200 OK\nST: roku:ecp\nUSN: uuid:roku-unix-1\nServer: Roku/1.0\n\n"
+        let device = SSDPPacketParser.parse(packet: unixPacket, senderIP: "192.168.1.201")
+        XCTAssertNotNil(device)
+        XCTAssertEqual(device?.id, "uuid:roku-unix-1")
+        XCTAssertEqual(device?.type, .roku)
+    }
+
+    func testSSDPByebyeRemovesDevice() async {
+        let mockTransport = MockSSDPTransport()
+        let engine = DiscoveryEngine(transport: mockTransport)
+
+        let initialDevice = DiscoveredDevice(
+            id: "uuid:leaving-tv-1",
+            name: "Samsung TV",
+            type: .dlna(brand: "Samsung"),
+            ipAddress: "192.168.1.150",
+            port: 8080
+        )
+        await engine.addOrUpdateDevice(initialDevice)
+        var devs = await engine.devices
+        XCTAssertEqual(devs.count, 1)
+
+        let byebyePacket = """
+        NOTIFY * HTTP/1.1\r
+        HOST: 239.255.255.250:1900\r
+        NT: urn:schemas-upnp-org:device:MediaRenderer:1\r
+        NTS: ssdp:byebye\r
+        USN: uuid:leaving-tv-1::urn:schemas-upnp-org:device:MediaRenderer:1\r
+        \r
+        """
+        await engine.processRawSSDPPacket(byebyePacket, senderIP: "192.168.1.150")
+
+        devs = await engine.devices
+        XCTAssertTrue(devs.isEmpty)
+    }
+
+    func testMDNSTXTRecordZeroLengthEntryIgnored() {
+        var rawData = Data()
+        // 0-length entry (0x00 byte)
+        rawData.append(0)
+        let parsed = MDNSParser.parseTXTRecord(data: rawData)
+        XCTAssertFalse(parsed.keys.contains(""))
+        XCTAssertTrue(parsed.isEmpty)
+    }
+
+    func testNegativeProbeIntervalClamped() async {
+        let mockTransport = MockSSDPTransport()
+        let engine = DiscoveryEngine(probeInterval: -5.0, transport: mockTransport)
+        // Should not trap or crash
+        await engine.startDiscovery()
+        let searching = await engine.isSearching
+        XCTAssertTrue(searching)
+        await engine.stopDiscovery()
+    }
+
+    func testDiscoveredDeviceIPv6URLFormatting() {
+        let dev = DiscoveredDevice(
+            id: "uuid:ipv6-tv",
+            name: "IPv6 TV",
+            type: .dlna(brand: "Smart TV"),
+            ipAddress: "fe80::1",
+            port: 8080
+        )
+        XCTAssertEqual(dev.formattedHost, "[fe80::1]")
+        XCTAssertEqual(dev.controlURL?.absoluteString, "http://[fe80::1]:8080/upnp/control/AVTransport1")
+        XCTAssertEqual(dev.ecpURL(path: "query/apps")?.absoluteString, "http://[fe80::1]:8080/query/apps")
     }
 }

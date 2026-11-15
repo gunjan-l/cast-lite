@@ -192,7 +192,11 @@ public struct NetworkInterfaceHelper: Sendable {
         fallbackHost: String = "localhost",
         path: String = "view"
     ) -> (url: String, resolution: IPResolutionResult) {
-        let resolution = resolveStreamIP(preferredInterface: preferredInterface, fallbackHost: fallbackHost)
+        let resolution = resolveStreamIP(
+            preferredInterface: preferredInterface,
+            fallbackHost: fallbackHost,
+            fallbackToAnyNonLoopback: true
+        )
         let url = Self.formatStreamURL(host: resolution.host, port: port, path: path)
         return (url, resolution)
     }

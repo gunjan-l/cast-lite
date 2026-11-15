@@ -60,11 +60,16 @@ public struct DiscoveredDevice: Identifiable, Hashable, Sendable, Equatable {
         self.lastSeen = lastSeen
     }
 
+    public var formattedHost: String {
+        (ipAddress.contains(":") && !ipAddress.hasPrefix("[")) ? "[\(ipAddress)]" : ipAddress
+    }
+
     public var controlURL: URL? {
-        return URL(string: "http://\(ipAddress):\(port)/upnp/control/AVTransport1")
+        return URL(string: "http://\(formattedHost):\(port)/upnp/control/AVTransport1")
     }
 
     public func ecpURL(path: String) -> URL? {
-        return URL(string: "http://\(ipAddress):\(port)/\(path)")
+        let cleanPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        return URL(string: "http://\(formattedHost):\(port)/\(cleanPath)")
     }
 }

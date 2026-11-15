@@ -352,7 +352,7 @@ public actor DiscoveryEngine {
         bonjourProvider: (any BonjourDiscoveryProviding)? = DefaultBonjourDiscoveryProvider()
     ) {
         self.offlineTimeout = offlineTimeout
-        self.probeInterval = probeInterval
+        self.probeInterval = max(0.1, probeInterval)
         self.transport = transport
         self.bonjourProvider = bonjourProvider
     }
@@ -382,7 +382,12 @@ public actor DiscoveryEngine {
     public func pruneStaleDevices() {
         let now = Date()
         let countBefore = devices.count
-        devices.removeAll { now.timeIntervalSince($0.lastSeen) > offlineTimeout }
+        devices.removeAll { device in
+            if device.type == .chromecast {
+                return false
+            }
+            return now.timeIntervalSince(device.lastSeen) > offlineTimeout
+        }
         if devices.count != countBefore {
             notifyDevicesChanged()
         }
@@ -468,6 +473,24 @@ public actor DiscoveryEngine {
     }
 
     public func processRawSSDPPacket(_ packet: String, senderIP: String) {
+        let normalized = packet.replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].trimmingCharacters(in: .whitespaces).uppercased()
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            headers[key] = value
+        }
+
+        if let nts = headers["NTS"], nts.lowercased().contains("byebye") {
+            if let rawUsn = headers["USN"] ?? headers["NT"] {
+                let id = rawUsn.components(separatedBy: "::").first ?? rawUsn
+                removeDevice(id: id)
+            }
+            return
+        }
+
         if let device = SSDPPacketParser.parse(packet: packet, senderIP: senderIP) {
             addOrUpdateDevice(device)
         }

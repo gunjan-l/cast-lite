@@ -26,6 +26,7 @@ public final class MockBonjourDiscoveryProvider: BonjourDiscoveryProviding, @unc
         lock.lock()
         defer { lock.unlock() }
         isBrowsing = false
+        onDeviceFound = nil
     }
 
     public func simulateDeviceFound(_ device: DiscoveredDevice) {
@@ -50,9 +51,22 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
     public func startBrowsing(onDeviceFound: @escaping @Sendable (DiscoveredDevice) -> Void) {
         lock.lock()
         self.onDeviceFoundHandler = onDeviceFound
+        let oldBrowser = self.browser
+        let oldServices = self.resolvingServices
+        self.browser = nil
+        self.resolvingServices.removeAll()
         lock.unlock()
 
         DispatchQueue.main.async { [weak self] in
+            oldBrowser?.stop()
+            oldBrowser?.removeFromRunLoop(.main, forMode: .common)
+            oldBrowser?.delegate = nil
+            for service in oldServices {
+                service.stop()
+                service.removeFromRunLoop(.main, forMode: .common)
+                service.delegate = nil
+            }
+
             guard let self = self else { return }
             let browser = NetServiceBrowser()
             browser.delegate = self
@@ -126,20 +140,22 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
         var resolvedPort: UInt16 = 8009
 
         for addressData in addresses {
-            addressData.withUnsafeBytes { rawPtr in
-                guard let base = rawPtr.baseAddress else { return }
-                let sa = base.assumingMemoryBound(to: sockaddr.self)
-                if sa.pointee.sa_family == sa_family_t(AF_INET) {
-                    let sin = base.assumingMemoryBound(to: sockaddr_in.self)
-                    var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-                    var addr = sin.pointee.sin_addr
-                    if inet_ntop(AF_INET, &addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil {
-                        resolvedIP = String(cString: buffer)
-                        resolvedPort = UInt16(bigEndian: sin.pointee.sin_port)
-                    }
+            guard addressData.count >= MemoryLayout<sockaddr_in>.size else { continue }
+            let saFamily = addressData.withUnsafeBytes { rawPtr -> sa_family_t in
+                rawPtr.load(as: sockaddr.self).sa_family
+            }
+            if saFamily == sa_family_t(AF_INET) {
+                let sin = addressData.withUnsafeBytes { rawPtr in
+                    rawPtr.load(as: sockaddr_in.self)
+                }
+                var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+                var addr = sin.sin_addr
+                if inet_ntop(AF_INET, &addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil {
+                    resolvedIP = String(cString: buffer)
+                    resolvedPort = UInt16(bigEndian: sin.sin_port)
+                    break
                 }
             }
-            if resolvedIP != nil { break }
         }
 
         guard let ip = resolvedIP else { return }
