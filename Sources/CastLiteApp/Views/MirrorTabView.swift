@@ -15,8 +15,11 @@ public struct MirrorTabView: View {
     @State private var hasGrantedLocalNetwork = false
     @State private var selectedQuality = 0 // 0: Ultra-Low Latency, 1: High Definition (1080p)
     @State private var errorMessage: String?
+    private let networkHelper: NetworkInterfaceHelper
 
-    public init() {}
+    public init(networkHelper: NetworkInterfaceHelper = NetworkInterfaceHelper()) {
+        self.networkHelper = networkHelper
+    }
 
     public var body: some View {
         NavigationStack {
@@ -162,9 +165,15 @@ public struct MirrorTabView: View {
         Task {
             do {
                 let port = try await streamController.start()
+                let (url, resolution) = networkHelper.resolveStreamURL(port: port)
                 await MainActor.run {
                     self.isStreaming = true
-                    self.streamURL = "http://192.168.1.50:\(port)/view"
+                    self.streamURL = url
+                    if resolution.isFallback {
+                        self.errorMessage = resolution.warningMessage
+                    } else {
+                        self.errorMessage = nil
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -180,6 +189,7 @@ public struct MirrorTabView: View {
             await MainActor.run {
                 self.isStreaming = false
                 self.streamURL = ""
+                self.errorMessage = nil
             }
         }
     }
