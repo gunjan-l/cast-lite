@@ -83,6 +83,7 @@ public final class CastAppState: ObservableObject {
                 do {
                     try await coordinator.connect(to: dev)
                     self.errorMessage = nil
+                    _ = try? await self.startScreenMirror()
                 } catch {
                     self.errorMessage = error.localizedDescription
                 }
