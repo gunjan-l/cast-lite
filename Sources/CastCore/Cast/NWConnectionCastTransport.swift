@@ -122,6 +122,25 @@ public final class NWConnectionCastTransport: CastTransport, @unchecked Sendable
                     }
                     resumeLock.unlock()
 
+                case .waiting(let error):
+                    // NWConnection retries `.waiting` forever; missing Local Network permission lands here.
+                    resumeLock.lock()
+                    let shouldFail = !resumed
+                    if shouldFail { resumed = true }
+                    resumeLock.unlock()
+                    if shouldFail {
+                        self.lock.lock()
+                        self._isConnected = false
+                        self.connection = nil
+                        let cont = self.streamContinuation
+                        self.streamContinuation = nil
+                        self.activeStream = nil
+                        self.lock.unlock()
+                        cont?.finish()
+                        nwConnection?.cancel()
+                        continuation.resume(throwing: CastTransportError.waiting(error.localizedDescription))
+                    }
+
                 default:
                     break
                 }

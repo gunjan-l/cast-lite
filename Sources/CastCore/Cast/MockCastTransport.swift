@@ -9,6 +9,7 @@ public final class MockCastTransport: CastTransport, @unchecked Sendable {
     private var streamContinuation: AsyncThrowingStream<Data, Error>.Continuation?
     private var activeStream: AsyncThrowingStream<Data, Error>?
     private var _shouldFailConnection: Error?
+    private var _hangConnection: Bool = false
     private var _onSend: (@Sendable (Data) async throws -> Void)?
 
     public var shouldFailConnection: Error? {
@@ -35,6 +36,11 @@ public final class MockCastTransport: CastTransport, @unchecked Sendable {
             defer { lock.unlock() }
             _onSend = newValue
         }
+    }
+
+    public var hangConnection: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _hangConnection }
+        set { lock.lock(); defer { lock.unlock() }; _hangConnection = newValue }
     }
 
     public init() {}
@@ -78,6 +84,11 @@ public final class MockCastTransport: CastTransport, @unchecked Sendable {
         if let failError = _shouldFailConnection {
             lock.unlock()
             throw failError
+        }
+        if _hangConnection {
+            lock.unlock()
+            do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { throw CastTransportError.cancelled }
+            throw CastTransportError.cancelled
         }
         _isConnected = true
         _connectedHost = host
@@ -157,3 +168,4 @@ public final class MockCastTransport: CastTransport, @unchecked Sendable {
         simulateDisconnect()
     }
 }
+

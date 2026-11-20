@@ -38,7 +38,13 @@ final class CastSessionCoordinatorTests: XCTestCase {
 
     final class MockChromecastDevice: @unchecked Sendable {
         let transport: MockCastTransport
+        enum LoadBehavior {
+            case playing, buffering, silent, idleError
+            case loadFailed(String)
+            case invalidRequest(String)
+        }
         var mediaSessionIdToReturn: Int = 1234
+        var loadBehavior: LoadBehavior = .playing
         private let lock = NSLock()
         private var _sentMessages: [CastMessage] = []
         private var framer = CastPacketFramer()
@@ -107,35 +113,59 @@ final class CastSessionCoordinatorTests: XCTestCase {
                     transport.simulateReceive(data: framed)
                 }
             } else if msg.namespace == CastNamespaces.media && type == "LOAD" {
-                let mediaStatusJSON = """
-                {
-                    "type": "MEDIA_STATUS",
-                    "requestId": \(reqId),
-                    "status": [
-                        {
-                            "mediaSessionId": \(self.mediaSessionIdToReturn),
-                            "playbackRate": 1,
-                            "playerState": "PLAYING",
-                            "currentTime": 0
-                        }
-                    ]
+                let mediaStatusJSON: String
+                switch self.loadBehavior {
+                case .silent:
+                    return
+                case .playing:
+                    mediaStatusJSON = mediaStatus(reqId: reqId, state: "PLAYING")
+                case .buffering:
+                    mediaStatusJSON = mediaStatus(reqId: reqId, state: "BUFFERING")
+                case .loadFailed(let reason):
+                    mediaStatusJSON = "{\"type\":\"LOAD_FAILED\",\"requestId\":\(reqId),\"reason\":\"\(reason)\"}"
+                case .invalidRequest(let reason):
+                    mediaStatusJSON = "{\"type\":\"INVALID_REQUEST\",\"requestId\":\(reqId),\"reason\":\"\(reason)\"}"
+                case .idleError:
+                    mediaStatusJSON = mediaStatus(reqId: reqId, state: "IDLE", idleReason: "ERROR")
                 }
-                """
-                let respMsg = CastMessage(
-                    protocolVersion: .castv2_1_0,
-                    sourceId: msg.destinationId,
-                    destinationId: msg.sourceId,
-                    namespace: CastNamespaces.media,
-                    payloadType: .string,
-                    payloadUtf8: mediaStatusJSON
-                )
-                if let framed = try? CastPacketFramer.frame(message: respMsg) {
-                    transport.simulateReceive(data: framed)
-                }
+                reply(namespace: CastNamespaces.media, from: msg.destinationId, to: msg.sourceId, json: mediaStatusJSON, transport: transport)
             }
         }
-    }
 
+        private func mediaStatus(reqId: Int, state: String, idleReason: String? = nil) -> String {
+            let idle = idleReason.map { ",\"idleReason\":\"\($0)\"" } ?? ""
+            return "{\"type\":\"MEDIA_STATUS\",\"requestId\":\(reqId),\"status\":[{\"mediaSessionId\":\(mediaSessionIdToReturn),\"playbackRate\":1,\"playerState\":\"\(state)\"\(idle),\"currentTime\":0}]}"
+        }
+
+        private func reply(namespace: String, from: String, to: String, json: String, transport: MockCastTransport) {
+            let respMsg = CastMessage(
+                protocolVersion: .castv2_1_0,
+                sourceId: from,
+                destinationId: to,
+                namespace: namespace,
+                payloadType: .string,
+                payloadUtf8: json
+            )
+            if let framed = try? CastPacketFramer.frame(message: respMsg) {
+                transport.simulateReceive(data: framed)
+            }
+        }
+
+        /// Receiver-initiated message, e.g. unsolicited MEDIA_STATUS (requestId 0) or CLOSE.
+        func pushFromReceiver(namespace: String, from: String = "mock-transport-001", json: String) {
+            reply(namespace: namespace, from: from, to: "sender-0", json: json, transport: transport)
+        }
+
+        func pushMediaStatus(state: String, idleReason: String? = nil) {
+            pushFromReceiver(namespace: CastNamespaces.media, json: mediaStatus(reqId: 0, state: state, idleReason: idleReason))
+        }
+    }
+    final class PhaseRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _phases: [CastPhase] = []
+        var phases: [CastPhase] { lock.lock(); defer { lock.unlock() }; return _phases }
+        func record(_ p: CastPhase) { lock.lock(); defer { lock.unlock() }; _phases.append(p) }
+    }
     // MARK: - Acceptance Criteria Tests
 
     func testCastMediaSendsLoadLiveStreamForM3U8() async throws {
@@ -176,12 +206,27 @@ final class CastSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(media["streamType"] as? String, "LIVE")
         XCTAssertEqual(media["contentType"] as? String, "application/x-mpegURL")
         XCTAssertEqual(media["contentId"] as? String, m3u8URL)
+        XCTAssertEqual(media["hlsVideoSegmentFormat"] as? String, "mpeg2_ts")
 
         let metadata = media["metadata"] as? [String: Any]
         XCTAssertEqual(metadata?["title"] as? String, "Live Channel")
         XCTAssertEqual(metadata?["metadataType"] as? Int, 0)
     }
 
+    // MARK: - Cast session state machine
+
+    func testHappyPathReachesPlayingThroughLaunchingAndLoading() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(transportFactory: { _ in mockDevice.transport })
+        let recorder = PhaseRecorder()
+        await coordinator.setOnPhaseChanged { recorder.record($0) }
+
+        try await coordinator.castMedia(url: "http://192.168.1.10:8080/stream.m3u8", to: makeChromecastDevice())
+
+        let phase = await coordinator.phase
+        XCTAssertEqual(phase, .playing)
+        XCTAssertEqual(recorder.phases, [.connecting, .launching, .loading, .playing])
+    }
     func testCastMediaSendsLoadBufferedForMP4() async throws {
         let mockDevice = MockChromecastDevice()
         mockDevice.mediaSessionIdToReturn = 456
@@ -423,7 +468,7 @@ final class CastSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(volume, 0.0, accuracy: 0.001)
     }
 
-    final class DialRecorder: @unchecked Sendable {
+    final class HTTPRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var _urls: [URL] = []
         private var _url: URL?
@@ -456,44 +501,9 @@ final class CastSessionCoordinatorTests: XCTestCase {
         }
     }
 
-    func testDialFallbackOnConnectionFailure() async throws {
-        let transport = MockCastTransport()
-        transport.shouldFailConnection = CastTransportError.connectionFailed("TLS handshake timeout on port 8009")
-
-        let dialRecorder = DialRecorder()
-
-        let coordinator = CastSessionCoordinator(
-            transportFactory: { _ in transport },
-            dialHTTPPoster: { url, body in
-                dialRecorder.record(url: url, body: body)
-            }
-        )
-
-        let device = makeChromecastDevice(ip: "192.168.1.155")
-        let streamURL = "http://192.168.1.10:8080/stream.m3u8"
-
-        // Calling castMedia should NOT throw connection error, but fall back to DIAL
-        try await coordinator.castMedia(url: streamURL, to: device)
-
-        let isPlaying = await coordinator.isPlaying
-        let currentURL = await coordinator.currentMediaURL
-        XCTAssertTrue(isPlaying)
-        XCTAssertEqual(currentURL, streamURL)
-
-        XCTAssertNotNil(dialRecorder.url)
-        XCTAssertEqual(dialRecorder.url?.scheme, "http")
-        XCTAssertEqual(dialRecorder.url?.host, "192.168.1.155")
-        XCTAssertEqual(dialRecorder.url?.port, 8008)
-        XCTAssertEqual(dialRecorder.url?.path, "/apps/CC1AD845")
-
-        if let body = dialRecorder.body, let bodyString = String(data: body, encoding: .utf8) {
-            XCTAssertEqual(bodyString, streamURL)
-        }
-    }
-
     func testExistingDLNAPathContinuesToFunction() async throws {
-        let recorder = DialRecorder()
-        let coordinator = CastSessionCoordinator(dialHTTPPoster: { url, body in
+        let recorder = HTTPRecorder()
+        let coordinator = CastSessionCoordinator(httpPoster: { url, body in
             recorder.record(url: url, body: body)
         })
         let dlnaDevice = makeDLNADevice()
@@ -528,8 +538,8 @@ final class CastSessionCoordinatorTests: XCTestCase {
     }
 
     func testExistingRokuPathContinuesToFunction() async throws {
-        let recorder = DialRecorder()
-        let coordinator = CastSessionCoordinator(dialHTTPPoster: { url, body in
+        let recorder = HTTPRecorder()
+        let coordinator = CastSessionCoordinator(httpPoster: { url, body in
             recorder.record(url: url, body: body)
         })
         let rokuDevice = makeRokuDevice()
@@ -715,7 +725,8 @@ final class CastSessionCoordinatorTests: XCTestCase {
             transportFactory: { _ in
                 counter.increment()
                 return mockDevice.transport
-            }
+            },
+            reconnectDelay: 0
         )
         let device = makeChromecastDevice()
         try await coordinator.connect(to: device)
@@ -752,7 +763,8 @@ final class CastSessionCoordinatorTests: XCTestCase {
     func testAutoReconnectionFailureTearsDownServerAndSetsErrorMessage() async throws {
         let mockDevice = MockChromecastDevice()
         let coordinator = CastSessionCoordinator(
-            transportFactory: { _ in mockDevice.transport }
+            transportFactory: { _ in mockDevice.transport },
+            reconnectDelay: 0
         )
         let device = makeChromecastDevice()
         try await coordinator.connect(to: device)
@@ -824,7 +836,8 @@ final class CastSessionCoordinatorTests: XCTestCase {
     func testHandleUnexpectedDisconnectionPreservesMediaTitle() async throws {
         let mockDevice = MockChromecastDevice()
         let coordinator = CastSessionCoordinator(
-            transportFactory: { _ in mockDevice.transport }
+            transportFactory: { _ in mockDevice.transport },
+            reconnectDelay: 0
         )
         let device = makeChromecastDevice()
         try await coordinator.castMedia(url: "http://example.com/custom.mp4", to: device, title: "Epic Movie")
@@ -872,125 +885,6 @@ final class CastSessionCoordinatorTests: XCTestCase {
         await streamController.stop()
     }
 
-    func testCastMediaDoesNotSwallowDialFallbackError() async throws {
-        let mockDevice = MockChromecastDevice()
-        mockDevice.transport.shouldFailConnection = CastTransportError.connectionFailed("Cast transport failed")
-
-        struct DialFailedError: Error, LocalizedError {
-            var errorDescription: String? { "DIAL HTTP 500 Internal Error" }
-        }
-
-        let coordinator = CastSessionCoordinator(
-            transportFactory: { _ in mockDevice.transport },
-            dialHTTPPoster: { (_: URL, _: Data?) async throws in
-                throw DialFailedError()
-            }
-        )
-
-        let device = makeChromecastDevice()
-        do {
-            try await coordinator.castMedia(url: "http://example.com/video.mp4", to: device)
-            XCTFail("Expected castMedia to throw when both Cast V2 and DIAL fail")
-        } catch {
-            let isPlaying = await coordinator.isPlaying
-            XCTAssertFalse(isPlaying)
-            let state = await coordinator.connectionState
-            if case .error(let msg) = state {
-                XCTAssertTrue(msg.contains("DIAL HTTP 500"))
-            } else {
-                XCTFail("Expected error state, got \(state)")
-            }
-        }
-    }
-
-    func testCastChromecastV2TriggersDialFallbackOnLoadFailed() async throws {
-        let mockDevice = MockChromecastDevice()
-        mockDevice.transport.onSend = { [weak transport = mockDevice.transport] data in
-            var framer = CastPacketFramer()
-            guard let packets = try? framer.append(data),
-                  let packet = packets.first,
-                  let msg = try? CastMessageCodec.decode(packet),
-                  let payload = msg.payloadUtf8,
-                  let d = payload.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                  let reqId = json["requestId"] as? Int,
-                  let type = json["type"] as? String else { return }
-
-            if msg.namespace == CastNamespaces.receiver && type == "LAUNCH" {
-                let statusJSON = """
-                {
-                    "type": "RECEIVER_STATUS",
-                    "requestId": \(reqId),
-                    "status": {
-                        "applications": [
-                            {
-                                "appId": "\(CastConstants.defaultAppId)",
-                                "displayName": "Default Media Receiver",
-                                "sessionId": "sess-1",
-                                "statusText": "Ready",
-                                "transportId": "trans-1"
-                            }
-                        ]
-                    }
-                }
-                """
-                let respMsg = CastMessage(
-                    protocolVersion: .castv2_1_0,
-                    sourceId: "receiver-0",
-                    destinationId: msg.sourceId,
-                    namespace: CastNamespaces.receiver,
-                    payloadType: .string,
-                    payloadUtf8: statusJSON
-                )
-                if let framed = try? CastPacketFramer.frame(message: respMsg) {
-                    transport?.simulateReceive(data: framed)
-                }
-            } else if msg.namespace == CastNamespaces.media && type == "LOAD" {
-                let failJSON = """
-                {
-                    "type": "LOAD_FAILED",
-                    "requestId": \(reqId)
-                }
-                """
-                let respMsg = CastMessage(
-                    protocolVersion: .castv2_1_0,
-                    sourceId: msg.destinationId,
-                    destinationId: msg.sourceId,
-                    namespace: CastNamespaces.media,
-                    payloadType: .string,
-                    payloadUtf8: failJSON
-                )
-                if let framed = try? CastPacketFramer.frame(message: respMsg) {
-                    transport?.simulateReceive(data: framed)
-                }
-            }
-        }
-
-        final class DialCallRecorder: @unchecked Sendable {
-            let lock = NSLock()
-            var called = false
-            func record() { lock.lock(); defer { lock.unlock() }; called = true }
-            var wasCalled: Bool { lock.lock(); defer { lock.unlock() }; return called }
-        }
-        let dialRecorder = DialCallRecorder()
-
-        let coordinator = CastSessionCoordinator(
-            transportFactory: { _ in mockDevice.transport },
-            dialHTTPPoster: { (_: URL, _: Data?) async throws in
-                dialRecorder.record()
-            }
-        )
-
-        let device = makeChromecastDevice()
-        try await coordinator.castMedia(url: "http://example.com/video.mp4", to: device)
-
-        XCTAssertTrue(dialRecorder.wasCalled)
-        let isPlaying = await coordinator.isPlaying
-        XCTAssertTrue(isPlaying)
-        let state = await coordinator.connectionState
-        XCTAssertEqual(state, .streaming)
-    }
-
     func testStopSetsStateToDisconnected() async throws {
         let mockDevice = MockChromecastDevice()
         let coordinator = CastSessionCoordinator(
@@ -1009,4 +903,154 @@ final class CastSessionCoordinatorTests: XCTestCase {
         let isPlaying = await coordinator.isPlaying
         XCTAssertFalse(isPlaying)
     }
-}
+
+    // MARK: - Failure and receiver-driven transitions
+
+    private func loadMessages(_ device: MockChromecastDevice) -> [CastMessage] {
+        device.sentMessages.filter { $0.namespace == CastNamespaces.media && ($0.payloadUtf8?.contains("\"LOAD\"") == true) }
+    }
+
+    private func waitForPhase(_ coordinator: CastSessionCoordinator, _ expected: CastPhase, timeout: TimeInterval = 2) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await coordinator.phase == expected { return true }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return await coordinator.phase == expected
+    }
+
+    private func castAndExpectFailure(_ mockDevice: MockChromecastDevice, file: StaticString = #filePath, line: UInt = #line) async -> (CastSessionCoordinator, Error?) {
+        let coordinator = CastSessionCoordinator(transportFactory: { _ in mockDevice.transport })
+        do {
+            try await coordinator.castMedia(url: "http://192.168.1.10:8080/stream.m3u8", to: makeChromecastDevice())
+            XCTFail("Expected castMedia to throw", file: file, line: line)
+            return (coordinator, nil)
+        } catch {
+            return (coordinator, error)
+        }
+    }
+
+    func testLoadFailedReachesFailedWithReceiverReason() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.loadBehavior = .loadFailed("MEDIA_UNSUPPORTED")
+        let (coordinator, _) = await castAndExpectFailure(mockDevice)
+
+        let phase = await coordinator.phase
+        guard case .failed(let failure) = phase else { return XCTFail("Expected failed, got \(phase)") }
+        XCTAssertEqual(failure, .loadFailed("MEDIA_UNSUPPORTED"))
+        let isPlaying = await coordinator.isPlaying
+        XCTAssertFalse(isPlaying)
+    }
+
+    func testInvalidRequestReachesFailedWithReceiverReason() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.loadBehavior = .invalidRequest("INVALID_COMMAND")
+        let (coordinator, _) = await castAndExpectFailure(mockDevice)
+
+        let phase = await coordinator.phase
+        XCTAssertEqual(phase, .failed(.loadFailed("INVALID_COMMAND")))
+    }
+
+    func testIdleReasonErrorInLoadResponseReachesFailed() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.loadBehavior = .idleError
+        let (coordinator, _) = await castAndExpectFailure(mockDevice)
+
+        let phase = await coordinator.phase
+        XCTAssertEqual(phase, .failed(.receiverError("ERROR")))
+    }
+
+    func testUnsolicitedMediaStatusMovesPhase() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(transportFactory: { _ in mockDevice.transport })
+        try await coordinator.castMedia(url: "http://192.168.1.10:8080/stream.m3u8", to: makeChromecastDevice())
+
+        mockDevice.pushMediaStatus(state: "BUFFERING")
+        let buffering = await waitForPhase(coordinator, .buffering)
+        XCTAssertTrue(buffering)
+
+        mockDevice.pushMediaStatus(state: "PLAYING")
+        let playing = await waitForPhase(coordinator, .playing)
+        XCTAssertTrue(playing)
+
+        mockDevice.pushMediaStatus(state: "IDLE", idleReason: "ERROR")
+        let failed = await waitForPhase(coordinator, .failed(.receiverError("ERROR")))
+        XCTAssertTrue(failed)
+        let isPlaying = await coordinator.isPlaying
+        XCTAssertFalse(isPlaying)
+    }
+
+    func testReceiverCloseEndsSessionWithStoppedOnTVAndDoesNotReconnect() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(transportFactory: { _ in mockDevice.transport }, reconnectDelay: 0)
+        try await coordinator.castMedia(url: "http://192.168.1.10:8080/stream.m3u8", to: makeChromecastDevice())
+
+        mockDevice.pushFromReceiver(namespace: CastNamespaces.connection, json: "{\"type\":\"CLOSE\"}")
+
+        let ended = await waitForPhase(coordinator, .ended("stopped on TV"))
+        XCTAssertTrue(ended)
+        let isPlaying = await coordinator.isPlaying
+        XCTAssertFalse(isPlaying)
+        XCTAssertEqual(loadMessages(mockDevice).count, 1)
+    }
+
+    func testConnectTimeoutReachesFailedWithinTimeout() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.transport.hangConnection = true
+        let coordinator = CastSessionCoordinator(transportFactory: { _ in mockDevice.transport }, connectTimeout: 0.3)
+
+        let started = Date()
+        do {
+            try await coordinator.connect(to: makeChromecastDevice())
+            XCTFail("Expected connect to time out")
+        } catch {
+            XCTAssertEqual(error as? CastFailure, .connectTimeout)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2.0)
+        let phase = await coordinator.phase
+        XCTAssertEqual(phase, .failed(.connectTimeout))
+    }
+
+    func testTransportWaitingReachesFailedWithPermissionError() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.transport.shouldFailConnection = CastTransportError.waiting("Local network prohibited")
+        let (coordinator, _) = await castAndExpectFailure(mockDevice)
+
+        let phase = await coordinator.phase
+        XCTAssertEqual(phase, .failed(.localNetworkPermission("Local network prohibited")))
+        let message = await coordinator.errorMessage
+        XCTAssertTrue(message?.contains("Local Network") == true)
+    }
+
+    func testCastV2ConnectionFailureIsFailureNotSuccess() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.transport.shouldFailConnection = CastTransportError.connectionFailed("TLS handshake timeout")
+        let (coordinator, _) = await castAndExpectFailure(mockDevice)
+
+        let phase = await coordinator.phase
+        guard case .failed(.connectionFailed) = phase else { return XCTFail("Expected failed, got \(phase)") }
+        let isPlaying = await coordinator.isPlaying
+        XCTAssertFalse(isPlaying)
+        let state = await coordinator.connectionState
+        guard case .error = state else { return XCTFail("Expected error state, got \(state)") }
+    }
+
+    func testReconnectAttemptsAreBounded() async throws {
+        let mockDevice = MockChromecastDevice()
+        let counter = AtomicCounter()
+        let coordinator = CastSessionCoordinator(
+            transportFactory: { _ in counter.increment(); return mockDevice.transport },
+            maxReconnectAttempts: 2,
+            reconnectDelay: 0
+        )
+        try await coordinator.castMedia(url: "http://192.168.1.10:8080/stream.m3u8", to: makeChromecastDevice())
+        XCTAssertEqual(counter.count, 1)
+
+        mockDevice.transport.shouldFailConnection = CastTransportError.connectionFailed("Host unreachable")
+        await coordinator.handleUnexpectedDisconnection()
+
+        XCTAssertEqual(counter.count, 3)
+        let phase = await coordinator.phase
+        XCTAssertEqual(phase, .failed(.reconnectFailed))
+    }}
+
