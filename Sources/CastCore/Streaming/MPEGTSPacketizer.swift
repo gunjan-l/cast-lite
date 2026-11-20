@@ -1,14 +1,19 @@
 import Foundation
 
+/// Video-only MPEG transport stream muxer for H.264 access units.
+/// Continuity counters live here, so they carry across HLS segments.
 public final class MPEGTSPacketizer: @unchecked Sendable {
     public static let syncByte: UInt8 = 0x47
     public static let patPID: UInt16 = 0x0000
     public static let pmtPID: UInt16 = 0x1000
     public static let videoPID: UInt16 = 0x0100
-    public static let audioPID: UInt16 = 0x0101
+
+    /// Access unit delimiter NAL (type 9, primary_pic_type 7 = any slice type).
+    static let accessUnitDelimiter = Data([0x00, 0x00, 0x00, 0x01, 0x09, 0xF0])
+    /// PCR leads the PTS by this much so the decoder clock is ahead of presentation.
+    static let pcrLead: Int64 = 9_000
 
     private var videoContinuityCounter: UInt8 = 0
-    private var audioContinuityCounter: UInt8 = 0
     private var patContinuityCounter: UInt8 = 0
     private var pmtContinuityCounter: UInt8 = 0
     private let lock = NSLock()
@@ -21,38 +26,29 @@ public final class MPEGTSPacketizer: @unchecked Sendable {
 
         var packet = Data(repeating: 0xFF, count: 188)
         packet[0] = Self.syncByte
-        // Transport error (0), payload unit start indicator (1), priority (0), PID (0x0000)
         packet[1] = 0x40
         packet[2] = 0x00
-        // Adaptation (01 - payload only), continuity counter
         packet[3] = 0x10 | (patContinuityCounter & 0x0F)
         patContinuityCounter = (patContinuityCounter + 1) & 0x0F
+        packet[4] = 0x00 // pointer field
 
-        // Pointer field
-        packet[4] = 0x00
-
-        // Table ID = 0x00 (PAT)
         var patTable = Data([
-            0x00,               // Table ID
-            0xB0, 0x0D,         // Section syntax indicator, section length = 13 (0x00D)
-            0x00, 0x01,         // Transport stream ID = 1
-            0xC1,               // Version 0, current_next = 1
-            0x00,               // Section number = 0
-            0x00,               // Last section number = 0
-            // Program 1 -> PMT PID 0x1000
-            0x00, 0x01,         // Program number = 1
-            0xF0 | UInt8(Self.pmtPID >> 8), UInt8(Self.pmtPID & 0xFF)
+            0x00,               // table id
+            0xB0, 0x0D,         // section length = 13
+            0x00, 0x01,         // transport stream id
+            0xC1,               // version 0, current
+            0x00, 0x00,         // section numbers
+            0x00, 0x01,         // program 1
+            0xE0 | UInt8(Self.pmtPID >> 8), UInt8(Self.pmtPID & 0xFF)
         ])
-
-        // Compute and append CRC32
-        let crc = computeCRC32(data: patTable)
-        var crcBE = crc.bigEndian
+        var crcBE = Self.crc32(patTable).bigEndian
         patTable.append(Data(bytes: &crcBE, count: 4))
 
         packet.replaceSubrange(5..<(5 + patTable.count), with: patTable)
         return packet
     }
 
+    /// Video-only PMT: one H.264 elementary stream, PCR carried on the video PID.
     public func generatePMT() -> Data {
         lock.lock()
         defer { lock.unlock() }
@@ -63,112 +59,129 @@ public final class MPEGTSPacketizer: @unchecked Sendable {
         packet[2] = UInt8(Self.pmtPID & 0xFF)
         packet[3] = 0x10 | (pmtContinuityCounter & 0x0F)
         pmtContinuityCounter = (pmtContinuityCounter + 1) & 0x0F
+        packet[4] = 0x00 // pointer field
 
-        // Pointer field
-        packet[4] = 0x00
-
-        // PMT table definition
         var pmtTable = Data([
-            0x02,               // Table ID = 0x02 (PMT)
-            0xB0, 0x17,         // Section syntax, length = 23 (0x017)
-            0x00, 0x01,         // Program number = 1
-            0xC1,               // Version 0, current = 1
-            0x00,               // Section 0
-            0x00,               // Last section 0
-            0xE0 | UInt8((Self.videoPID >> 8) & 0x1F), UInt8(Self.videoPID & 0xFF), // PCR PID = Video PID
-            0xF0, 0x00,         // Program info length = 0
-            // Video stream: Type 0x1B (H.264), PID 0x0100
-            0x1B,
+            0x02,               // table id
+            0xB0, 0x12,         // section length = 18
+            0x00, 0x01,         // program number
+            0xC1,               // version 0, current
+            0x00, 0x00,         // section numbers
+            0xE0 | UInt8((Self.videoPID >> 8) & 0x1F), UInt8(Self.videoPID & 0xFF), // PCR PID
+            0xF0, 0x00,         // program info length
+            0x1B,               // H.264
             0xE0 | UInt8((Self.videoPID >> 8) & 0x1F), UInt8(Self.videoPID & 0xFF),
-            0xF0, 0x00,         // ES info length = 0
-            // Audio stream: Type 0x0F (AAC ADTS), PID 0x0101
-            0x0F,
-            0xE0 | UInt8((Self.audioPID >> 8) & 0x1F), UInt8(Self.audioPID & 0xFF),
-            0xF0, 0x00          // ES info length = 0
+            0xF0, 0x00          // ES info length
         ])
-
-        let crc = computeCRC32(data: pmtTable)
-        var crcBE = crc.bigEndian
+        var crcBE = Self.crc32(pmtTable).bigEndian
         pmtTable.append(Data(bytes: &crcBE, count: 4))
 
         packet.replaceSubrange(5..<(5 + pmtTable.count), with: pmtTable)
         return packet
     }
 
-    public func packetizeVideo(nalu: Data, pts: UInt64, isKeyframe: Bool) -> [Data] {
+    /// Packetizes one access unit into 188-byte TS packets: an AUD is ensured at the
+    /// front, and keyframes carry a PCR and the random access indicator.
+    public func packetizeVideo(_ accessUnit: AccessUnit) -> [Data] {
         lock.lock()
         defer { lock.unlock() }
 
-        // Construct PES Packet:
-        // Start code: 0x000001, Stream ID: 0xE0 (Video)
-        var pesHeader = Data([0x00, 0x00, 0x01, 0xE0])
-        // PES Packet Length: 0 for video (unbounded)
-        pesHeader.append(contentsOf: [0x00, 0x00])
-        // PTS flag only = 0x80, header data length = 5
-        pesHeader.append(contentsOf: [0x80, 0x80, 0x05])
+        var es = Data()
+        if !Self.startsWithAUD(accessUnit.annexB) {
+            es.append(Self.accessUnitDelimiter)
+        }
+        es.append(accessUnit.annexB)
 
-        // Encode 33-bit PTS into 5 bytes
-        let ptsVal = pts & 0x1FFFFFFFF
-        let b0: UInt8 = 0x21 | UInt8((ptsVal >> 29) & 0x0E)
-        let b1: UInt8 = UInt8((ptsVal >> 22) & 0xFF)
-        let b2: UInt8 = 0x01 | UInt8((ptsVal >> 14) & 0xFE)
-        let b3: UInt8 = UInt8((ptsVal >> 7) & 0xFF)
-        let b4: UInt8 = 0x01 | UInt8((ptsVal << 1) & 0xFE)
-        pesHeader.append(contentsOf: [b0, b1, b2, b3, b4])
+        // PES header: start code, stream id, unbounded length, PTS only.
+        var pes = Data([0x00, 0x00, 0x01, 0xE0, 0x00, 0x00, 0x80, 0x80, 0x05])
+        pes.append(Self.encodePTS(accessUnit.pts.ticks))
+        pes.append(es)
 
-        // Full PES data = PES header + NALU
-        var pesData = pesHeader
-        pesData.append(nalu)
+        let pcr: Int64? = accessUnit.isKeyframe ? max(0, accessUnit.pts.ticks - Self.pcrLead) : nil
 
         var packets: [Data] = []
         var offset = 0
-        var isFirst = true
+        while offset < pes.count {
+            let isFirst = offset == 0
+            let withPCR = isFirst && pcr != nil
+            let minAdaptation = withPCR ? 8 : 0
+            let remaining = pes.count - offset
+            let capacity = 184 - minAdaptation
 
-        while offset < pesData.count {
-            var packet = Data(repeating: 0xFF, count: 188)
-            packet[0] = Self.syncByte
-
-            let payloadStartIndicator: UInt8 = isFirst ? 0x40 : 0x00
-            packet[1] = payloadStartIndicator | UInt8((Self.videoPID >> 8) & 0x1F)
-            packet[2] = UInt8(Self.videoPID & 0xFF)
-
-            let remaining = pesData.count - offset
-
-            if remaining >= 184 {
-                // Payload only
-                packet[3] = 0x10 | (videoContinuityCounter & 0x0F)
-                videoContinuityCounter = (videoContinuityCounter + 1) & 0x0F
-                packet.replaceSubrange(4..<188, with: pesData.subdata(in: offset..<(offset + 184)))
-                offset += 184
+            let payloadLength: Int
+            let adaptationTotal: Int
+            if remaining >= capacity {
+                payloadLength = capacity
+                adaptationTotal = minAdaptation
             } else {
-                // Needs adaptation field stuffing
-                let adaptationLength = 184 - remaining
-                packet[3] = 0x30 | (videoContinuityCounter & 0x0F)
-                videoContinuityCounter = (videoContinuityCounter + 1) & 0x0F
-
-                packet[4] = UInt8(adaptationLength - 1)
-                if adaptationLength > 1 {
-                    packet[5] = 0x00 // Flags
-                    if adaptationLength > 2 {
-                        // Fill stuffing with 0xFF
-                        let stuffing = Data(repeating: 0xFF, count: adaptationLength - 2)
-                        packet.replaceSubrange(6..<(4 + adaptationLength), with: stuffing)
-                    }
-                }
-
-                let payloadStart = 4 + adaptationLength
-                packet.replaceSubrange(payloadStart..<188, with: pesData.subdata(in: offset..<pesData.count))
-                offset = pesData.count
+                payloadLength = remaining
+                adaptationTotal = 184 - remaining
             }
 
-            packets.append(packet)
-            isFirst = false
-        }
+            var packet = Data(repeating: 0xFF, count: 188)
+            packet[0] = Self.syncByte
+            packet[1] = (isFirst ? 0x40 : 0x00) | UInt8((Self.videoPID >> 8) & 0x1F)
+            packet[2] = UInt8(Self.videoPID & 0xFF)
+            let control: UInt8 = adaptationTotal > 0 ? 0x30 : 0x10
+            packet[3] = control | (videoContinuityCounter & 0x0F)
+            videoContinuityCounter = (videoContinuityCounter + 1) & 0x0F
 
+            if adaptationTotal > 0 {
+                packet[4] = UInt8(adaptationTotal - 1)
+                if adaptationTotal >= 2 {
+                    var flags: UInt8 = 0
+                    if isFirst && accessUnit.isKeyframe { flags |= 0x40 } // random access
+                    if withPCR { flags |= 0x10 }
+                    packet[5] = flags
+                    if withPCR, let pcr {
+                        packet.replaceSubrange(6..<12, with: Self.encodePCR(pcr))
+                    }
+                }
+            }
+
+            let payloadStart = 4 + adaptationTotal
+            packet.replaceSubrange(payloadStart..<188, with: pes.subdata(in: offset..<(offset + payloadLength)))
+            offset += payloadLength
+            packets.append(packet)
+        }
         return packets
     }
 
-    private func computeCRC32(data: Data) -> UInt32 {
+    private static func startsWithAUD(_ data: Data) -> Bool {
+        let bytes = [UInt8](data.prefix(5))
+        if bytes.count >= 5, bytes[0] == 0, bytes[1] == 0, bytes[2] == 0, bytes[3] == 1 {
+            return bytes[4] & 0x1F == 9
+        }
+        if bytes.count >= 4, bytes[0] == 0, bytes[1] == 0, bytes[2] == 1 {
+            return bytes[3] & 0x1F == 9
+        }
+        return false
+    }
+
+    private static func encodePTS(_ ticks: Int64) -> Data {
+        let v = UInt64(bitPattern: ticks) & 0x1_FFFF_FFFF
+        return Data([
+            0x21 | UInt8((v >> 29) & 0x0E),
+            UInt8((v >> 22) & 0xFF),
+            0x01 | UInt8((v >> 14) & 0xFE),
+            UInt8((v >> 7) & 0xFF),
+            0x01 | UInt8((v << 1) & 0xFE)
+        ])
+    }
+
+    private static func encodePCR(_ ticks: Int64) -> Data {
+        let base = UInt64(bitPattern: ticks) & 0x1_FFFF_FFFF
+        return Data([
+            UInt8((base >> 25) & 0xFF),
+            UInt8((base >> 17) & 0xFF),
+            UInt8((base >> 9) & 0xFF),
+            UInt8((base >> 1) & 0xFF),
+            UInt8(((base & 1) << 7) | 0x7E),
+            0x00
+        ])
+    }
+
+    private static func crc32(_ data: Data) -> UInt32 {
         var crc: UInt32 = 0xFFFFFFFF
         for byte in data {
             for bit in 0..<8 {

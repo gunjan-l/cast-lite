@@ -8,17 +8,16 @@ print("""
 Starting embedded streaming engine in Podman...
 """)
 
-let streamController = StreamController(port: 8080)
+let mirrorStream = MirrorStream(port: 8080)
 let discoveryEngine = DiscoveryEngine()
 
 Task {
     do {
-        let port = try await streamController.start()
+        let port = try await mirrorStream.start()
         print("\nStreaming server active on port \(port)!")
         print("  - Web Stream Viewer:   http://localhost:\(port)/view")
         print("  - Live HLS Playlist:   http://localhost:\(port)/stream.m3u8")
-        print("  - Live MJPEG Stream:   http://localhost:\(port)/stream")
-        print("  - Server Status API:   http://localhost:\(port)/status\n")
+        print("  - Debug status:        http://localhost:\(port)/debug\n")
 
         print("Scanning local network for Smart TVs (SSDP/mDNS)...")
         await discoveryEngine.startDiscovery()

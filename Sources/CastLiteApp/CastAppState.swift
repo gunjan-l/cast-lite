@@ -6,7 +6,7 @@ import CastCore
 @MainActor
 public final class CastAppState: ObservableObject {
     public let coordinator: CastSessionCoordinator
-    public let streamController: StreamController
+    public let mirrorStream: MirrorStream
     public let networkHelper: NetworkInterfaceHelper
     public let discoveryEngine: DiscoveryEngine
     public let subscriptionManager: SubscriptionManager
@@ -28,13 +28,13 @@ public final class CastAppState: ObservableObject {
 
     public init(
         coordinator: CastSessionCoordinator = CastSessionCoordinator(),
-        streamController: StreamController = StreamController(),
+        mirrorStream: MirrorStream = MirrorStream(),
         networkHelper: NetworkInterfaceHelper = NetworkInterfaceHelper(),
         discoveryEngine: DiscoveryEngine = DiscoveryEngine(),
         subscriptionManager: SubscriptionManager = SubscriptionManager()
     ) {
         self.coordinator = coordinator
-        self.streamController = streamController
+        self.mirrorStream = mirrorStream
         self.networkHelper = networkHelper
         self.discoveryEngine = discoveryEngine
         self.subscriptionManager = subscriptionManager
@@ -108,7 +108,7 @@ public final class CastAppState: ObservableObject {
 
     public func startScreenMirror() async throws -> String {
         let url = try await coordinator.startScreenMirror(
-            streamController: streamController,
+            mirrorStream: mirrorStream,
             networkHelper: networkHelper
         )
         self.isStreaming = true
@@ -119,7 +119,7 @@ public final class CastAppState: ObservableObject {
     }
 
     public func stopScreenMirror() async {
-        try? await coordinator.stopScreenMirror(streamController: streamController)
+        try? await coordinator.stopScreenMirror(mirrorStream: mirrorStream)
         self.isStreaming = false
         self.streamURL = ""
         await syncCoordinatorProperties()
@@ -175,7 +175,7 @@ public final class CastAppState: ObservableObject {
     public func stopPlayback() {
         Task {
             if self.isStreaming {
-                await self.streamController.stop()
+                await self.mirrorStream.stop()
             }
             try? await self.coordinator.stop()
             self.isPlaying = false

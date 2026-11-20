@@ -188,29 +188,4 @@ final class HTTPServerTests: XCTestCase {
         XCTAssertEqual(frame2.frameIndex, 1)
     }
 
-    func testStreamControllerServesViewerAndStatus() async throws {
-        let controller = StreamController(port: 0)
-        let port = try await controller.start()
-        XCTAssertGreaterThan(port, 0)
-        let streaming = await controller.isStreaming
-        XCTAssertTrue(streaming)
-
-        // Verify HTML viewer
-        let viewURL = URL(string: "http://127.0.0.1:\(port)/view")!
-        let (viewData, viewResponse) = try await URLSession.shared.data(from: viewURL)
-        let viewHTTP = viewResponse as? HTTPURLResponse
-        XCTAssertEqual(viewHTTP?.statusCode, 200)
-        XCTAssertTrue(String(decoding: viewData, as: UTF8.self).contains("Cast-Lite Live Stream Tracer"))
-
-        // Verify Status
-        let statusURL = URL(string: "http://127.0.0.1:\(port)/status")!
-        let (statusData, statusResponse) = try await URLSession.shared.data(from: statusURL)
-        let statusHTTP = statusResponse as? HTTPURLResponse
-        XCTAssertEqual(statusHTTP?.statusCode, 200)
-        XCTAssertTrue(String(decoding: statusData, as: UTF8.self).contains("test-pattern"))
-
-        await controller.stop()
-        let stoppedStreaming = await controller.isStreaming
-        XCTAssertFalse(stoppedStreaming)
-    }
 }

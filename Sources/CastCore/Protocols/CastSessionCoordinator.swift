@@ -19,7 +19,7 @@ public actor CastSessionCoordinator {
     public var activeDevice: DiscoveredDevice? { selectedDevice }
     public private(set) var isReconnecting: Bool = false
     public private(set) var errorMessage: String?
-    public private(set) var activeStreamController: StreamController?
+    public private(set) var activeMirrorStream: MirrorStream?
 
     public private(set) var currentMediaURL: String?
     public private(set) var currentMediaTitle: String?
@@ -163,19 +163,19 @@ public actor CastSessionCoordinator {
 
     @discardableResult
     public func startScreenMirror(
-        streamController: StreamController,
+        mirrorStream: MirrorStream,
         networkHelper: NetworkInterfaceHelper = .shared,
         port: Int? = nil
     ) async throws -> String {
-        self.activeStreamController = streamController
-        let boundPort = try await streamController.start()
+        self.activeMirrorStream = mirrorStream
+        let boundPort = try await mirrorStream.start()
         let portToUse = UInt16(port ?? Int(boundPort))
         let resolvedURL: String
         do {
             (resolvedURL, _) = try networkHelper.resolveStreamURL(port: portToUse, path: "stream.m3u8")
         } catch {
-            await streamController.stop()
-            self.activeStreamController = nil
+            await mirrorStream.stop()
+            self.activeMirrorStream = nil
             self.errorMessage = error.localizedDescription
             updateConnectionState(.error(error.localizedDescription))
             throw error
@@ -190,10 +190,10 @@ public actor CastSessionCoordinator {
         return resolvedURL
     }
 
-    public func stopScreenMirror(streamController: StreamController) async throws {
+    public func stopScreenMirror(mirrorStream: MirrorStream) async throws {
         try? await self.stop(disconnect: false)
-        await streamController.stop()
-        self.activeStreamController = nil
+        await mirrorStream.stop()
+        self.activeMirrorStream = nil
         if let client = self.castClient, await client.isConnected {
             updateConnectionState(.ready)
         } else if selectedDevice != nil && selectedDevice?.type != .chromecast {
@@ -469,9 +469,9 @@ public actor CastSessionCoordinator {
         self.mediaSessionId = nil
         self.activeTransportId = nil
 
-        if let controller = self.activeStreamController {
+        if let controller = self.activeMirrorStream {
             await controller.stop()
-            self.activeStreamController = nil
+            self.activeMirrorStream = nil
         }
 
         updateConnectionState(.error(message))

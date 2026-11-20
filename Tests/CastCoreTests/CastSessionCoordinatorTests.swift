@@ -635,17 +635,17 @@ final class CastSessionCoordinatorTests: XCTestCase {
         let device = makeChromecastDevice()
         try await coordinator.connect(to: device)
 
-        let streamController = StreamController(port: 0)
+        let mirrorStream = MirrorStream(port: 0)
         let netHelper = makeNetworkHelper()
 
         let streamURL = try await coordinator.startScreenMirror(
-            streamController: streamController,
+            mirrorStream: mirrorStream,
             networkHelper: netHelper
         )
 
         let state = await coordinator.connectionState
         XCTAssertEqual(state, .streaming)
-        let isStreaming = await streamController.isStreaming
+        let isStreaming = await mirrorStream.isStreaming
         XCTAssertTrue(isStreaming)
         let isPlaying = await coordinator.isPlaying
         XCTAssertTrue(isPlaying)
@@ -659,7 +659,7 @@ final class CastSessionCoordinatorTests: XCTestCase {
         XCTAssertNotNil(loadMsg)
         XCTAssertTrue(loadMsg?.payloadUtf8?.contains("Screen Mirror") == true)
 
-        await streamController.stop()
+        await mirrorStream.stop()
     }
 
     func testStopScreenMirrorStopsPlaybackAndServerAndTransitionsToReadyOrDisconnected() async throws {
@@ -670,16 +670,16 @@ final class CastSessionCoordinatorTests: XCTestCase {
         let device = makeChromecastDevice()
         try await coordinator.connect(to: device)
 
-        let streamController = StreamController(port: 0)
+        let mirrorStream = MirrorStream(port: 0)
         let netHelper = makeNetworkHelper()
         _ = try await coordinator.startScreenMirror(
-            streamController: streamController,
+            mirrorStream: mirrorStream,
             networkHelper: netHelper
         )
 
-        try await coordinator.stopScreenMirror(streamController: streamController)
+        try await coordinator.stopScreenMirror(mirrorStream: mirrorStream)
 
-        let isStreaming = await streamController.isStreaming
+        let isStreaming = await mirrorStream.isStreaming
         XCTAssertFalse(isStreaming)
         let isPlaying = await coordinator.isPlaying
         XCTAssertFalse(isPlaying)
@@ -720,10 +720,10 @@ final class CastSessionCoordinatorTests: XCTestCase {
         let device = makeChromecastDevice()
         try await coordinator.connect(to: device)
 
-        let streamController = StreamController(port: 0)
+        let mirrorStream = MirrorStream(port: 0)
         let netHelper = makeNetworkHelper()
         _ = try await coordinator.startScreenMirror(
-            streamController: streamController,
+            mirrorStream: mirrorStream,
             networkHelper: netHelper
         )
 
@@ -746,7 +746,7 @@ final class CastSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(states.contains(.connecting))
         XCTAssertTrue(states.contains(.streaming))
 
-        await streamController.stop()
+        await mirrorStream.stop()
     }
 
     func testAutoReconnectionFailureTearsDownServerAndSetsErrorMessage() async throws {
@@ -757,10 +757,10 @@ final class CastSessionCoordinatorTests: XCTestCase {
         let device = makeChromecastDevice()
         try await coordinator.connect(to: device)
 
-        let streamController = StreamController(port: 0)
+        let mirrorStream = MirrorStream(port: 0)
         let netHelper = makeNetworkHelper()
         _ = try await coordinator.startScreenMirror(
-            streamController: streamController,
+            mirrorStream: mirrorStream,
             networkHelper: netHelper
         )
 
@@ -777,7 +777,7 @@ final class CastSessionCoordinatorTests: XCTestCase {
         XCTAssertFalse(isReconnecting)
 
         // Verify local server was torn down (no orphaned server)
-        let isStreaming = await streamController.isStreaming
+        let isStreaming = await mirrorStream.isStreaming
         XCTAssertFalse(isStreaming)
     }
 
@@ -856,12 +856,12 @@ final class CastSessionCoordinatorTests: XCTestCase {
         )
         try await coordinator.connect(to: makeChromecastDevice())
 
-        let streamController = StreamController(port: 0)
+        let mirrorStream = MirrorStream(port: 0)
         let noWiFiHelper = NetworkInterfaceHelper(provider: MockNetworkInterfaceProvider(interfaces: []))
 
         do {
             _ = try await coordinator.startScreenMirror(
-                streamController: streamController,
+                mirrorStream: mirrorStream,
                 networkHelper: noWiFiHelper
             )
             XCTFail("Expected noWiFiIPv4Address")
@@ -871,7 +871,7 @@ final class CastSessionCoordinatorTests: XCTestCase {
 
         let errorMsg = await coordinator.errorMessage
         XCTAssertTrue(errorMsg?.contains("Wi-Fi") == true)
-        let isStreaming = await streamController.isStreaming
+        let isStreaming = await mirrorStream.isStreaming
         XCTAssertFalse(isStreaming)
         let currentURL = await coordinator.currentMediaURL
         XCTAssertNil(currentURL)
