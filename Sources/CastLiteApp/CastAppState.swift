@@ -11,6 +11,8 @@ public final class CastAppState: ObservableObject {
     public let discoveryEngine: DiscoveryEngine
     public let subscriptionManager: SubscriptionManager
 
+    private let selectionController: DeviceSelectionController
+
     @Published public var connectionState: CastConnectionState = .disconnected
     @Published public var selectedDevice: DiscoveredDevice? = nil
     @Published public var isStreaming: Bool = false
@@ -35,6 +37,9 @@ public final class CastAppState: ObservableObject {
         self.networkHelper = networkHelper
         self.discoveryEngine = discoveryEngine
         self.subscriptionManager = subscriptionManager
+        self.selectionController = DeviceSelectionController { [weak self] device in
+            await self?.applySelection(device)
+        }
 
         setupStateObserver()
     }
@@ -77,16 +82,22 @@ public final class CastAppState: ObservableObject {
 
     public func selectDevice(_ device: DiscoveredDevice?) {
         self.selectedDevice = device
-        Task {
-            await coordinator.selectDevice(device)
-            if let dev = device {
-                do {
-                    try await coordinator.connect(to: dev)
-                    self.errorMessage = nil
-                } catch {
+        selectionController.select(device)
+    }
+
+    private func applySelection(_ device: DiscoveredDevice?) async {
+        await coordinator.selectDevice(device)
+        if let dev = device, !Task.isCancelled {
+            do {
+                try await coordinator.connect(to: dev)
+                self.errorMessage = nil
+            } catch {
+                if !Task.isCancelled {
                     self.errorMessage = error.localizedDescription
                 }
             }
+        }
+        if !Task.isCancelled {
             await syncCoordinatorProperties()
         }
     }
