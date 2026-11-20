@@ -849,29 +849,33 @@ final class CastSessionCoordinatorTests: XCTestCase {
         }
     }
 
-    func testStartScreenMirrorRecordsErrorMessageWhenResolutionIsFallback() async throws {
+    func testStartScreenMirrorWithoutWiFiThrowsTypedErrorAndCastsNothing() async throws {
         let mockDevice = MockChromecastDevice()
         let coordinator = CastSessionCoordinator(
             transportFactory: { _ in mockDevice.transport }
         )
-        let device = makeChromecastDevice()
-        try await coordinator.connect(to: device)
+        try await coordinator.connect(to: makeChromecastDevice())
 
         let streamController = StreamController(port: 0)
-        let fallbackHelper = NetworkInterfaceHelper(provider: MockNetworkInterfaceProvider(interfaces: []))
+        let noWiFiHelper = NetworkInterfaceHelper(provider: MockNetworkInterfaceProvider(interfaces: []))
 
-        _ = try await coordinator.startScreenMirror(
-            streamController: streamController,
-            networkHelper: fallbackHelper
-        )
+        do {
+            _ = try await coordinator.startScreenMirror(
+                streamController: streamController,
+                networkHelper: noWiFiHelper
+            )
+            XCTFail("Expected noWiFiIPv4Address")
+        } catch {
+            XCTAssertEqual(error as? StreamURLError, .noWiFiIPv4Address)
+        }
 
         let errorMsg = await coordinator.errorMessage
-        XCTAssertNotNil(errorMsg)
-        XCTAssertTrue(errorMsg?.contains("Wi-Fi is disconnected") == true)
-
-        await streamController.stop()
+        XCTAssertTrue(errorMsg?.contains("Wi-Fi") == true)
+        let isStreaming = await streamController.isStreaming
+        XCTAssertFalse(isStreaming)
+        let currentURL = await coordinator.currentMediaURL
+        XCTAssertNil(currentURL)
     }
-
     func testCastMediaDoesNotSwallowDialFallbackError() async throws {
         let mockDevice = MockChromecastDevice()
         mockDevice.transport.shouldFailConnection = CastTransportError.connectionFailed("Cast transport failed")
