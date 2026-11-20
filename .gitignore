@@ -1,6 +1,7 @@
 # User and documentation files
 CLAUDE.md
-docs/
+docs/*
+!docs/specs/
 .claude/
 
 # Xcode & Apple build artifacts
