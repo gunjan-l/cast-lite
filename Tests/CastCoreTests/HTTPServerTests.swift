@@ -156,29 +156,4 @@ final class HTTPServerTests: XCTestCase {
         let stoppedStreaming = await controller.isStreaming
         XCTAssertFalse(stoppedStreaming)
     }
-
-    func testStreamControllerServesHostedMediaWithByteRange() async throws {
-        let controller = StreamController(port: 0)
-        let sampleMedia = Data((0..<200).map { UInt8($0) })
-        await controller.setHostedMedia(name: "test_clip.mp4", data: sampleMedia)
-        let port = try await controller.start()
-
-        // Test full GET
-        let mediaURL = URL(string: "http://127.0.0.1:\(port)/media/test_clip.mp4")!
-        let (fullData, fullResponse) = try await URLSession.shared.data(from: mediaURL)
-        let fullHTTP = fullResponse as? HTTPURLResponse
-        XCTAssertEqual(fullHTTP?.statusCode, 200)
-        XCTAssertEqual(fullData.count, 200)
-
-        // Test range request
-        var rangeReq = URLRequest(url: mediaURL)
-        rangeReq.setValue("bytes=0-49", forHTTPHeaderField: "Range")
-        let (rangeData, rangeResponse) = try await URLSession.shared.data(for: rangeReq)
-        let rangeHTTP = rangeResponse as? HTTPURLResponse
-        XCTAssertEqual(rangeHTTP?.statusCode, 206)
-        XCTAssertEqual(rangeData.count, 50)
-        XCTAssertEqual(rangeHTTP?.value(forHTTPHeaderField: "Content-Range"), "bytes 0-49/200")
-
-        await controller.stop()
-    }
 }

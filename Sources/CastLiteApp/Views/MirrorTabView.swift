@@ -147,24 +147,12 @@ public struct MirrorTabView: View {
                     .padding(.horizontal)
 
                     // System Broadcast Picker button
-                    VStack(spacing: 6) {
-                        HStack {
-                            Text(appState.isStreaming ? "Tap to broadcast your iPhone display:" : "iOS Screen Mirror:")
-                                .font(.caption.bold())
-                                .foregroundColor(appState.isStreaming ? .blue : .secondary)
-                            Spacer()
-                            BroadcastPickerView(preferredExtension: "com.castlite.app.broadcast")
-                        }
-                        if appState.isStreaming {
-                            Text("TV receiver is active. Tap the broadcast button above to start screen capture.")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                    HStack {
+                        Text("iOS Screen Mirror:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        BroadcastPickerView(preferredExtension: "com.castlite.app.broadcast")
                     }
-                    .padding(10)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(8)
                     .padding(.horizontal)
                 }
                 .padding(.vertical, 4)
