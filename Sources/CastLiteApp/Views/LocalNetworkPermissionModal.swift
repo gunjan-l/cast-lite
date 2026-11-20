@@ -23,6 +23,7 @@ public struct LocalNetworkPermissionModal: View {
             Text("Find TVs on your Wi-Fi")
                 .font(.title2.bold())
                 .multilineTextAlignment(.center)
+                .accessibilityAddTraits(.isHeader)
 
             VStack(spacing: 8) {
                 Text("Cast-Lite needs Local Network access to see TVs near you.")
@@ -45,7 +46,7 @@ public struct LocalNetworkPermissionModal: View {
             .buttonStyle(.borderedProminent)
         }
         .padding(24)
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large]) // .large so the largest text sizes don't clip
     }
 }
 

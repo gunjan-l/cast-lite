@@ -19,15 +19,16 @@ public struct SettingsView: View {
             List {
                 Section("Help & Information") {
                     NavigationLink("TV Setup & Connection Guide") {
-                        VStack(alignment: .leading, spacing: 16) {
+                        ScrollView { VStack(alignment: .leading, spacing: 16) {
                             Text("Connecting your Smart TV")
                                 .font(.title3.bold())
                             Text("1. Ensure your iPhone and Smart TV are connected to the same Wi-Fi network.")
                             Text("2. On the main screen, tap the TV row and choose your TV from the list.")
                             Text("3. Tap Start to begin mirroring your screen to the TV.")
-                            Spacer()
                         }
                         .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                     Link("Terms of Service (Apple Standard EULA)", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!)
                     Link("Privacy Policy", destination: URL(string: "https://castlite.app/privacy")!)
@@ -40,6 +41,7 @@ public struct SettingsView: View {
                         Text(Self.versionString)
                             .foregroundStyle(.secondary)
                     }
+                    .accessibilityElement(children: .combine)
                 }
             }
             .navigationTitle("Settings")

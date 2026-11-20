@@ -1,6 +1,9 @@
 ﻿#if canImport(SwiftUI)
 import SwiftUI
 import CastCore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @MainActor
 public struct MirrorView: View {
@@ -10,6 +13,7 @@ public struct MirrorView: View {
     @State private var showDevicePicker = false
     @State private var hasGrantedLocalNetwork = false
     @State private var localNetworkDeclined: Bool
+    @State private var lastAnnouncedInput: StatusInput?
 
     public init(
         appState: CastAppState? = nil,
@@ -24,16 +28,18 @@ public struct MirrorView: View {
         }
     }
 
-    private var status: StatusModel {
-        StatusPresentation.status(for: StatusInput(
+    private var statusInput: StatusInput {
+        StatusInput(
             connectionState: appState.connectionState,
             isScanning: appState.isScanning,
             isReconnecting: appState.isReconnecting,
             selectedDeviceName: appState.selectedDevice?.name,
             errorMessage: appState.errorMessage,
             localNetworkDeclined: localNetworkDeclined
-        ))
+        )
     }
+
+    private var status: StatusModel { StatusPresentation.status(for: statusInput) }
 
     public var body: some View {
         NavigationStack {
@@ -99,7 +105,33 @@ public struct MirrorView: View {
         }
         .onAppear {
             appState.startDiscovery()
+            lastAnnouncedInput = statusInput
         }
+        // Start is the system broadcast picker, which gives no callback. The
+        // streaming flag flipping is the observable moment mirroring starts or
+        // stops, so the light haptic hangs off that and touches no broadcast logic.
+        .onChange(of: appState.isStreaming) { _ in
+            Self.lightHaptic()
+        }
+        .onChange(of: statusInput) { new in
+            if let text = StatusAnnouncement.text(from: lastAnnouncedInput, to: new) {
+                Self.announce(text)
+            }
+            lastAnnouncedInput = new
+        }
+    }
+
+    private static func lightHaptic() {
+        #if canImport(UIKit)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+    }
+
+    // UIAccessibility.post is iOS 16-safe; AccessibilityNotification is iOS 17.
+    private static func announce(_ text: String) {
+        #if canImport(UIKit)
+        UIAccessibility.post(notification: .announcement, argument: text)
+        #endif
     }
 
     private var statusSection: some View {
@@ -111,6 +143,7 @@ public struct MirrorView: View {
                     .accessibilityHidden(true)
                 Text(status.title)
                     .font(.title2.bold())
+                    .accessibilityAddTraits(.isHeader)
                 Text(status.subtitle)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -140,23 +173,34 @@ public struct MirrorView: View {
             HStack {
                 Image(systemName: appState.selectedDevice?.type.systemIcon ?? "tv")
                     .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
                 Text(appState.selectedDevice?.name ?? "Choose a TV")
                     .foregroundStyle(.primary)
                 Spacer()
                 Image(systemName: "chevron.right")
                     .font(.footnote.bold())
                     .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
             }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
+        .accessibilityLabel(appState.selectedDevice.map { "TV, \($0.name)" } ?? "Choose a TV")
+        .accessibilityHint("Opens the list of TVs")
     }
 
     private var broadcastBar: some View {
         HStack {
             Text("Start Mirroring")
                 .font(.headline)
+                .accessibilityHidden(true)
             Spacer()
             BroadcastPickerView(preferredExtension: "com.castlite.app.broadcast")
                 .frame(width: 44, height: 44)
+                .accessibilityLabel("Start or stop mirroring")
+                .accessibilityHint(appState.selectedDevice == nil
+                    ? "Choose a TV first"
+                    : "Opens the system screen broadcast sheet")
         }
         .padding()
         .frame(maxWidth: .infinity)
