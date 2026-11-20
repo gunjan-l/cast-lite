@@ -8,7 +8,7 @@ public struct CastLiteApp: App {
 
     public var body: some Scene {
         WindowGroup {
-            MainTabView()
+            RootView()
         }
     }
 }

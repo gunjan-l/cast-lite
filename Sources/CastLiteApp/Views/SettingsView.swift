@@ -2,7 +2,9 @@
 import SwiftUI
 import CastCore
 
-public struct SettingsTabView: View {
+public struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+
     public init() {}
 
     public var body: some View {
@@ -14,7 +16,7 @@ public struct SettingsTabView: View {
                             Text("Connecting your Smart TV")
                                 .font(.title3.bold())
                             Text("1. Ensure your iPhone and Smart TV are connected to the same Wi-Fi network.")
-                            Text("2. Open the Mirror tab and tap your TV name when it appears.")
+                            Text("2. Open the Mirror screen and tap your TV name when it appears.")
                             Text("3. Tap the broadcast button and start the broadcast to begin mirroring.")
                             Spacer()
                         }
@@ -34,6 +36,12 @@ public struct SettingsTabView: View {
                 }
             }
             .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 }
