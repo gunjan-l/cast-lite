@@ -25,7 +25,9 @@ targets:
     type: application
     platform: iOS
     bundleId: com.castlite.app
-    scheme: {}
+    scheme:
+      testTargets:
+        - CastLiteAppTests
     sources:
       - path: Sources/CastLiteApp
     dependencies:
@@ -52,6 +54,17 @@ targets:
         NSPhotoLibraryUsageDescription: "Cast-Lite needs access to your photos and videos to stream them to your Smart TV."
         NSBonjourServices:
           - "_googlecast._tcp"
+
+  CastLiteAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/CastLiteAppTests
+    dependencies:
+      - target: CastLite
+      - target: CastCore
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
 
   CastLiteBroadcastExtension:
     type: app-extension
