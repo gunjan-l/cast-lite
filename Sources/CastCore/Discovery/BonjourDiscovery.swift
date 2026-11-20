@@ -4,7 +4,10 @@ import Darwin
 #endif
 
 public protocol BonjourDiscoveryProviding: Sendable {
-    func startBrowsing(onDeviceFound: @escaping @Sendable (DiscoveredDevice) -> Void)
+    func startBrowsing(
+        onDeviceFound: @escaping @Sendable (DiscoveredDevice) -> Void,
+        onDeviceRemoved: @escaping @Sendable (String) -> Void
+    )
     func stopBrowsing()
 }
 
@@ -12,14 +15,19 @@ public final class MockBonjourDiscoveryProvider: BonjourDiscoveryProviding, @unc
     private let lock = NSLock()
     public private(set) var isBrowsing = false
     public var onDeviceFound: (@Sendable (DiscoveredDevice) -> Void)?
+    public var onDeviceRemoved: (@Sendable (String) -> Void)?
 
     public init() {}
 
-    public func startBrowsing(onDeviceFound: @escaping @Sendable (DiscoveredDevice) -> Void) {
+    public func startBrowsing(
+        onDeviceFound: @escaping @Sendable (DiscoveredDevice) -> Void,
+        onDeviceRemoved: @escaping @Sendable (String) -> Void
+    ) {
         lock.lock()
         defer { lock.unlock() }
         isBrowsing = true
         self.onDeviceFound = onDeviceFound
+        self.onDeviceRemoved = onDeviceRemoved
     }
 
     public func stopBrowsing() {
@@ -27,6 +35,14 @@ public final class MockBonjourDiscoveryProvider: BonjourDiscoveryProviding, @unc
         defer { lock.unlock() }
         isBrowsing = false
         onDeviceFound = nil
+        onDeviceRemoved = nil
+    }
+
+    public func simulateDeviceRemoved(id: String) {
+        lock.lock()
+        let callback = onDeviceRemoved
+        lock.unlock()
+        callback?(id)
     }
 
     public func simulateDeviceFound(_ device: DiscoveredDevice) {
@@ -43,14 +59,21 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
     private var browser: NetServiceBrowser?
     private var resolvingServices: [NetService] = []
     private var onDeviceFoundHandler: (@Sendable (DiscoveredDevice) -> Void)?
+    private var onDeviceRemovedHandler: (@Sendable (String) -> Void)?
+    private var deviceIDsByServiceName: [String: String] = [:]
 
     public override init() {
         super.init()
     }
 
-    public func startBrowsing(onDeviceFound: @escaping @Sendable (DiscoveredDevice) -> Void) {
+    public func startBrowsing(
+        onDeviceFound: @escaping @Sendable (DiscoveredDevice) -> Void,
+        onDeviceRemoved: @escaping @Sendable (String) -> Void
+    ) {
         lock.lock()
         self.onDeviceFoundHandler = onDeviceFound
+        self.onDeviceRemovedHandler = onDeviceRemoved
+        self.deviceIDsByServiceName.removeAll()
         let oldBrowser = self.browser
         let oldServices = self.resolvingServices
         self.browser = nil
@@ -81,6 +104,8 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
     public func stopBrowsing() {
         lock.lock()
         self.onDeviceFoundHandler = nil
+        self.onDeviceRemovedHandler = nil
+        self.deviceIDsByServiceName.removeAll()
         lock.unlock()
 
         DispatchQueue.main.async { [weak self] in
@@ -118,8 +143,14 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
 
     public func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
         lock.lock()
-        defer { lock.unlock() }
         resolvingServices.removeAll { $0 == service }
+        let removedID = deviceIDsByServiceName.removeValue(forKey: service.name)
+        let callback = onDeviceRemovedHandler
+        lock.unlock()
+
+        if let removedID = removedID {
+            callback?(removedID)
+        }
     }
 
     // MARK: - NetServiceDelegate
@@ -171,6 +202,9 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
         }
 
         let device = MDNSParser.parseChromecast(name: friendlyName, ipAddress: ip, port: resolvedPort)
+        lock.lock()
+        deviceIDsByServiceName[sender.name] = device.id
+        lock.unlock()
         callback(device)
     }
 
@@ -185,7 +219,10 @@ public final class DefaultBonjourDiscoveryProvider: NSObject, BonjourDiscoveryPr
 #else
 public final class DefaultBonjourDiscoveryProvider: BonjourDiscoveryProviding, @unchecked Sendable {
     public init() {}
-    public func startBrowsing(onDeviceFound: @escaping @Sendable (DiscoveredDevice) -> Void) {}
+    public func startBrowsing(
+        onDeviceFound: @escaping @Sendable (DiscoveredDevice) -> Void,
+        onDeviceRemoved: @escaping @Sendable (String) -> Void
+    ) {}
     public func stopBrowsing() {}
 }
 #endif
