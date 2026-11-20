@@ -27,7 +27,12 @@ public struct BroadcastPickerView: UIViewRepresentable {
         return picker
     }
 
-    public func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {}
+    public func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {
+        // Mirror SwiftUI's .disabled onto the system picker's inner button.
+        for case let button as UIButton in uiView.subviews {
+            button.isEnabled = context.environment.isEnabled
+        }
+    }
 }
 #else
 public struct BroadcastPickerView: View {
