@@ -985,6 +985,58 @@ final class CastSessionCoordinatorTests: XCTestCase {
         XCTAssertFalse(isPlaying)
     }
 
+    func testIdleErrorCarriesReceiverDetailedErrorCode() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(transportFactory: { _ in mockDevice.transport })
+        try await coordinator.castMedia(url: "http://192.168.1.10:8080/stream.m3u8", to: makeChromecastDevice())
+
+        mockDevice.pushFromReceiver(namespace: CastNamespaces.media, json: """
+        {"type":"MEDIA_STATUS","requestId":0,"status":[{"mediaSessionId":1234,"playerState":"IDLE","idleReason":"ERROR","detailedErrorCode":905}]}
+        """)
+        let failed = await waitForPhase(coordinator, .failed(.receiverError("error code 905")))
+        XCTAssertTrue(failed)
+        let message = await coordinator.errorMessage
+        XCTAssertEqual(message, "The TV reported a playback error: error code 905")
+    }
+
+    func testIdleErrorPrefersReceiverReasonText() async throws {
+        let mockDevice = MockChromecastDevice()
+        let coordinator = CastSessionCoordinator(transportFactory: { _ in mockDevice.transport })
+        try await coordinator.castMedia(url: "http://192.168.1.10:8080/stream.m3u8", to: makeChromecastDevice())
+
+        mockDevice.pushFromReceiver(namespace: CastNamespaces.media, json: """
+        {"type":"MEDIA_STATUS","requestId":0,"status":[{"mediaSessionId":1234,"playerState":"IDLE","idleReason":"ERROR","detailedErrorCode":905,"extendedStatus":{"playerState":"IDLE","reason":"MEDIA_SRC_NOT_SUPPORTED"}}]}
+        """)
+        let failed = await waitForPhase(coordinator, .failed(.receiverError("MEDIA_SRC_NOT_SUPPORTED")))
+        XCTAssertTrue(failed)
+    }
+
+    func testSelectDeviceDoesNotClearAnEarlierError() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.loadBehavior = .loadFailed("MEDIA_UNSUPPORTED")
+        let (coordinator, _) = await castAndExpectFailure(mockDevice)
+        let before = await coordinator.errorMessage
+        XCTAssertNotNil(before)
+
+        await coordinator.selectDevice(makeChromecastDevice())
+
+        let after = await coordinator.errorMessage
+        XCTAssertEqual(after, before)
+    }
+
+    func testErrorClearsOnlyWhenConnectSucceeds() async throws {
+        let mockDevice = MockChromecastDevice()
+        mockDevice.loadBehavior = .loadFailed("MEDIA_UNSUPPORTED")
+        let (coordinator, _) = await castAndExpectFailure(mockDevice)
+        let before = await coordinator.errorMessage
+        XCTAssertNotNil(before)
+
+        try await coordinator.connect(to: makeChromecastDevice())
+
+        let after = await coordinator.errorMessage
+        XCTAssertNil(after)
+    }
+
     func testReceiverCloseEndsSessionWithStoppedOnTVAndDoesNotReconnect() async throws {
         let mockDevice = MockChromecastDevice()
         let coordinator = CastSessionCoordinator(transportFactory: { _ in mockDevice.transport }, reconnectDelay: 0)

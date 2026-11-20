@@ -215,11 +215,14 @@ public actor CastSessionCoordinator {
     public func selectDevice(_ device: DiscoveredDevice?) async {
         if let previous = self.selectedDevice, previous != device {
             if self.isPlaying || self.connectionState != .disconnected {
-                try? await self.stop()
+                do {
+                    try await self.stop()
+                } catch {
+                    fail(failure(from: error))
+                }
             }
         }
         self.selectedDevice = device
-        self.errorMessage = nil
         self.currentMediaTitle = nil
         transition(.idle, ready: false)
     }
@@ -228,19 +231,20 @@ public actor CastSessionCoordinator {
 
     public func connect(to device: DiscoveredDevice) async throws {
         self.selectedDevice = device
-        self.errorMessage = nil
 
         switch device.type {
         case .chromecast:
             do {
                 _ = try await establishSession(with: device)
                 transition(.idle, ready: true)
+                self.errorMessage = nil
             } catch {
                 throw fail(failure(from: error))
             }
 
         case .roku, .dlna, .web:
             transition(.idle, ready: true)
+            self.errorMessage = nil
         }
     }
 
@@ -281,7 +285,12 @@ public actor CastSessionCoordinator {
     }
 
     public func stopScreenMirror(mirrorStream: MirrorStream) async throws {
-        try? await self.stop(disconnect: false)
+        var stopError: Error?
+        do {
+            try await self.stop(disconnect: false)
+        } catch {
+            stopError = error
+        }
         await mirrorStream.stop()
         self.activeMirrorStream = nil
         if let client = self.castClient, await client.isConnected {
@@ -290,6 +299,9 @@ public actor CastSessionCoordinator {
             transition(.idle, ready: true)
         } else {
             transition(.idle, ready: false)
+        }
+        if let stopError {
+            throw fail(failure(from: stopError))
         }
     }
 
@@ -593,7 +605,7 @@ public actor CastSessionCoordinator {
         case "IDLE":
             switch status["idleReason"] as? String {
             case "ERROR":
-                fail(.receiverError("ERROR"))
+                fail(.receiverError(Self.receiverErrorDetail(status: status, message: json)))
             case "FINISHED":
                 isPlaying = false
                 transition(.ended("finished"))
@@ -739,8 +751,8 @@ public actor CastSessionCoordinator {
         }
 
         let status = (response["status"] as? [[String: Any]])?.first
-        if status?["playerState"] as? String == "IDLE", let idle = status?["idleReason"] as? String, idle == "ERROR" {
-            throw CastFailure.receiverError(idle)
+        if let status, status["playerState"] as? String == "IDLE", status["idleReason"] as? String == "ERROR" {
+            throw CastFailure.receiverError(Self.receiverErrorDetail(status: status, message: response))
         }
 
         guard let sessionId = extractMediaSessionId(from: response) else {
@@ -748,6 +760,19 @@ public actor CastSessionCoordinator {
         }
         self.mediaSessionId = sessionId
         return status?["playerState"] as? String == "BUFFERING" ? .buffering : .playing
+    }
+
+    /// The receiver's own explanation for an IDLE/ERROR status: a reason string (message, status entry or
+    /// `extendedStatus`), else its `detailedErrorCode`, else the bare `idleReason`.
+    private static func receiverErrorDetail(status: [String: Any], message: [String: Any]) -> String {
+        let extended = status["extendedStatus"] as? [String: Any]
+        for candidate in [message["reason"], status["reason"], extended?["reason"]] {
+            if let reason = candidate as? String, !reason.isEmpty { return reason }
+        }
+        if let code = status["detailedErrorCode"] as? Int ?? message["detailedErrorCode"] as? Int {
+            return "error code \(code)"
+        }
+        return status["idleReason"] as? String ?? "ERROR"
     }
 
     private func extractMediaSessionId(from response: [String: Any]) -> Int? {
