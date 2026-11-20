@@ -102,6 +102,8 @@ public actor CastSessionCoordinator {
 
     private var receiverReady = false
     private var activeTransportId: String?
+    /// Session id of the receiver app this coordinator launched; closed on stop.
+    private var launchedSessionId: String?
     private var activeTransport: CastTransport?
     private let customCastClient: CastV2Client?
     private let transportFactory: (@Sendable (DiscoveredDevice) -> CastTransport)?
@@ -411,10 +413,18 @@ public actor CastSessionCoordinator {
                     try? await sendCastPayload(payload, namespace: CastNamespaces.media, destinationId: transportId)
                 }
                 if disconnect {
+                    if let sessionId = launchedSessionId {
+                        try? await sendCastPayload(
+                            ["type": "STOP", "sessionId": sessionId],
+                            namespace: CastNamespaces.receiver,
+                            destinationId: CastConstants.defaultReceiverId
+                        )
+                    }
                     await client.disconnect()
                 }
             }
             if disconnect {
+                self.launchedSessionId = nil
                 if self.customCastClient == nil {
                     self.castClient = nil
                 }
@@ -654,10 +664,16 @@ public actor CastSessionCoordinator {
                 return existing
             }
             await self.transition(.launching)
-            return try await client.launchReceiver(appId: CastConstants.defaultAppId).transportId
+            let launched = try await client.launchReceiver(appId: CastConstants.defaultAppId)
+            await self.recordLaunched(sessionId: launched.sessionId)
+            return launched.transportId
         }
         self.activeTransportId = transportId
         return transportId
+    }
+
+    private func recordLaunched(sessionId: String) {
+        launchedSessionId = sessionId
     }
 
     private func castChromecastV2(url: String, to device: DiscoveredDevice, title: String?) async throws {

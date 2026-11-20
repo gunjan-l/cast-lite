@@ -179,4 +179,88 @@ final class MirrorSessionTests: XCTestCase {
             // connection refused: expected
         }
     }
+
+    // MARK: - Casting
+
+    private typealias Receiver = CastSessionCoordinatorTests.MockChromecastDevice
+
+    private func castSession(_ receiver: Receiver, discovered: [DiscoveredDevice] = []) -> MirrorSession {
+        MirrorSession(
+            port: 0,
+            discoveryFallback: { discovered },
+            castTransportFactory: { _ in receiver.transport },
+            hostResolver: { "192.168.1.20" }
+        )
+    }
+
+    private func castPayloads(_ receiver: Receiver, namespace: String, type: String) -> [[String: Any]] {
+        receiver.sentMessages.compactMap { msg in
+            guard msg.namespace == namespace, let s = msg.payloadUtf8,
+                  let json = try? JSONSerialization.jsonObject(with: Data(s.utf8)) as? [String: Any],
+                  json["type"] as? String == type else { return nil }
+            return json
+        }
+    }
+
+    func testSelectedDeviceSendsConnectLaunchAndLoadOfStreamURL() async throws {
+        let receiver = Receiver()
+        let session = castSession(receiver)
+        _ = try await session.start(handoff: MirrorHandoff(selection: .device(tv("chosen")), quality: .high))
+
+        let port = session.status().port
+        XCTAssertFalse(castPayloads(receiver, namespace: CastNamespaces.connection, type: "CONNECT").isEmpty)
+        XCTAssertEqual(castPayloads(receiver, namespace: CastNamespaces.receiver, type: "LAUNCH").count, 1)
+        let loads = castPayloads(receiver, namespace: CastNamespaces.media, type: "LOAD")
+        XCTAssertEqual(loads.count, 1)
+        let media = loads.first?["media"] as? [String: Any]
+        XCTAssertEqual(media?["contentId"] as? String, "http://192.168.1.20:\(port)/stream.m3u8")
+        XCTAssertEqual(session.status().castPhase, .playing)
+        await session.stop()
+    }
+
+    func testNoHandoffAndOneTVCastsToIt() async throws {
+        let receiver = Receiver()
+        let session = castSession(receiver, discovered: [tv("only")])
+        _ = try await session.start(handoff: nil)
+
+        XCTAssertEqual(castPayloads(receiver, namespace: CastNamespaces.media, type: "LOAD").count, 1)
+        XCTAssertEqual(session.status().castPhase, .playing)
+        await session.stop()
+    }
+
+    func testCastFailureLeavesHTTPRoutesServingAndReportsError() async throws {
+        let receiver = Receiver()
+        receiver.loadBehavior = .loadFailed("bad stream")
+        let session = castSession(receiver)
+        _ = try await session.start(handoff: MirrorHandoff(selection: .device(tv("chosen")), quality: .high))
+
+        let status = session.status()
+        XCTAssertEqual(status.castPhase, .failed(.loadFailed("bad stream")))
+        XCTAssertEqual(status.lastError, CastFailure.loadFailed("bad stream").message)
+        XCTAssertNotEqual(status.phase, .failed)
+        let info = try await debug(status.port)
+        XCTAssertEqual(info["castPhase"] as? String, "failed")
+        XCTAssertEqual(info["lastError"] as? String, CastFailure.loadFailed("bad stream").message)
+        await session.stop()
+    }
+
+    func testStopSendsMediaStopAndClosesReceiverApp() async throws {
+        let receiver = Receiver()
+        let session = castSession(receiver)
+        _ = try await session.start(handoff: MirrorHandoff(selection: .device(tv("chosen")), quality: .high))
+        let port = session.status().port
+
+        await session.stop()
+
+        let stops = castPayloads(receiver, namespace: CastNamespaces.media, type: "STOP")
+        XCTAssertEqual(stops.first?["mediaSessionId"] as? Int, 1234)
+        let appStops = castPayloads(receiver, namespace: CastNamespaces.receiver, type: "STOP")
+        XCTAssertEqual(appStops.first?["sessionId"] as? String, "mock-sess-001")
+        XCTAssertEqual(session.status().phase, .ended)
+        XCTAssertEqual(session.status().castPhase, .ended("stopped"))
+        do {
+            _ = try await debug(port)
+            XCTFail("server should be down")
+        } catch {}
+    }
 }

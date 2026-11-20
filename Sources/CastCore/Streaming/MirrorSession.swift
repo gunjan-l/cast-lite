@@ -61,10 +61,12 @@ public struct MirrorSessionStatus: Sendable, Equatable {
     public let handoffSource: HandoffSource
     public let target: MirrorTarget
     public let quality: MirrorQuality
+    /// Cast session phase; nil for browser-only sessions.
+    public let castPhase: CastPhase?
 }
 
 /// Owns the lifecycle of one broadcast on top of `MirrorStream`. Platform-neutral; the single test seam.
-/// Casting to `.cast` targets is wired in a later ticket; for now the resolved target is only reported.
+/// For `.cast` targets the HTTP server and stream start first, then the Cast session; Cast failures never stop the server.
 public final class MirrorSession: @unchecked Sendable {
     public typealias DiscoveryFallback = @Sendable () async -> [DiscoveredDevice]
     public typealias CastTransportFactory = @Sendable (DiscoveredDevice) -> CastTransport
@@ -84,6 +86,8 @@ public final class MirrorSession: @unchecked Sendable {
     private var handoffSource: HandoffSource = .noHandoff
     private var target: MirrorTarget = .browserOnly
     private var quality: MirrorQuality = .high
+    private var castPhase: CastPhase?
+    private var coordinator: CastSessionCoordinator?
 
     public init(
         port: UInt16 = 8080,
@@ -128,6 +132,9 @@ public final class MirrorSession: @unchecked Sendable {
             }
             let url = NetworkInterfaceHelper.formatStreamURL(host: host, port: port, path: "view")
             lock.lock(); streamURL = url; lock.unlock()
+            if case .cast(let device) = resolvedTarget {
+                await cast(to: device, streamURL: "http://\(host):\(port)/stream.m3u8")
+            }
             return url
         } catch {
             lock.lock()
@@ -149,8 +156,32 @@ public final class MirrorSession: @unchecked Sendable {
         let wasStarted = started
         started = false
         if wasStarted { ended = true }
+        let coordinator = self.coordinator
+        self.coordinator = nil
         lock.unlock()
+        if let coordinator {
+            await coordinator.setOnPhaseChanged(nil)
+            try? await coordinator.stop()
+            lock.lock()
+            if wasStarted { castPhase = .ended("stopped") }
+            lock.unlock()
+        }
         await stream.stop()
+    }
+
+    /// Never throws: a Cast failure is recorded in `castPhase` and `lastError` while HTTP keeps serving.
+    private func cast(to device: DiscoveredDevice, streamURL: String) async {
+        guard let factory = castTransportFactory else { return }
+        let coordinator = CastSessionCoordinator(transportFactory: factory)
+        lock.lock(); self.coordinator = coordinator; castPhase = .idle; lock.unlock()
+        await coordinator.setOnPhaseChanged { [weak self] phase in self?.castPhaseChanged(phase) }
+        try? await coordinator.castMedia(url: streamURL, to: device, title: "Screen Mirror")
+    }
+
+    private func castPhaseChanged(_ phase: CastPhase) {
+        lock.lock(); defer { lock.unlock() }
+        castPhase = phase
+        if case .failed(let failure) = phase { lastError = failure.message }
     }
 
     public func status() -> MirrorSessionStatus {
@@ -174,7 +205,8 @@ public final class MirrorSession: @unchecked Sendable {
             lastError: lastError,
             handoffSource: handoffSource,
             target: target,
-            quality: quality
+            quality: quality,
+            castPhase: castPhase
         )
     }
 
@@ -190,6 +222,19 @@ public final class MirrorSession: @unchecked Sendable {
         }
     }
 
+    private static func name(_ phase: CastPhase) -> String {
+        switch phase {
+        case .idle: return "idle"
+        case .connecting: return "connecting"
+        case .launching: return "launching"
+        case .loading: return "loading"
+        case .buffering: return "buffering"
+        case .playing: return "playing"
+        case .ended: return "ended"
+        case .failed: return "failed"
+        }
+    }
+
     private func debugJSON() -> Data {
         let s = status()
         let object: [String: Any] = [
@@ -198,6 +243,7 @@ public final class MirrorSession: @unchecked Sendable {
             "port": Int(s.port),
             "streamURL": s.streamURL ?? NSNull(),
             "lastError": s.lastError ?? NSNull(),
+            "castPhase": s.castPhase.map(Self.name) ?? NSNull(),
             "handoffSource": s.handoffSource.description
         ]
         return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
