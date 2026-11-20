@@ -6,7 +6,6 @@ import CastCore
 public struct MirrorTabView: View {
     @ObservedObject public var appState: CastAppState
     @State private var showPermissionModal = false
-    @State private var showPaywallModal = false
     @State private var hasGrantedLocalNetwork = false
     @State private var selectedQuality = 0 // 0: Ultra-Low Latency, 1: High Definition (1080p)
 
@@ -132,20 +131,6 @@ public struct MirrorTabView: View {
                         }
                     }
 
-                    Button(action: handleStartMirrorAction) {
-                        HStack {
-                            Image(systemName: appState.isStreaming ? "stop.fill" : "play.fill")
-                            Text(appState.isStreaming ? "Stop Stream" : "Start Mirror")
-                                .fontWeight(.semibold)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(appState.isStreaming ? Color.red : Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                    }
-                    .padding(.horizontal)
-
                     // System Broadcast Picker button
                     HStack {
                         Text("iOS Screen Mirror:")
@@ -179,50 +164,10 @@ public struct MirrorTabView: View {
                     appState.refreshDevices()
                 }
             }
-            .sheet(isPresented: $showPaywallModal) {
-                PaywallModal(isPresented: $showPaywallModal, subscriptionManager: appState.subscriptionManager) {
-                    executeStartStreaming()
-                }
-            }
+
         }
         .onAppear {
             appState.startDiscovery()
-        }
-    }
-
-    private func handleStartMirrorAction() {
-        if appState.isStreaming {
-            executeStopStreaming()
-            return
-        }
-
-        Task {
-            let entitled = await appState.subscriptionManager.isEntitled
-            if entitled {
-                executeStartStreaming()
-            } else {
-                await MainActor.run {
-                    self.showPaywallModal = true
-                }
-            }
-        }
-    }
-
-    private func executeStartStreaming() {
-        Task {
-            do {
-                _ = try await appState.startScreenMirror()
-            } catch {
-                await MainActor.run {
-                    appState.errorMessage = "Failed to start streaming: \(error.localizedDescription)"
-                }
-            }
-        }
-    }
-
-    private func executeStopStreaming() {
-        Task {
-            await appState.stopScreenMirror()
         }
     }
 }
