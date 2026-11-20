@@ -7,6 +7,13 @@ public struct SettingsView: View {
 
     public init() {}
 
+    private static var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (Build \(build))"
+    }
+
     public var body: some View {
         NavigationStack {
             List {
@@ -16,8 +23,8 @@ public struct SettingsView: View {
                             Text("Connecting your Smart TV")
                                 .font(.title3.bold())
                             Text("1. Ensure your iPhone and Smart TV are connected to the same Wi-Fi network.")
-                            Text("2. Open the Mirror screen and tap your TV name when it appears.")
-                            Text("3. Tap the broadcast button and start the broadcast to begin mirroring.")
+                            Text("2. On the main screen, tap the TV row and choose your TV from the list.")
+                            Text("3. Tap Start to begin mirroring your screen to the TV.")
                             Spacer()
                         }
                         .padding()
@@ -30,8 +37,8 @@ public struct SettingsView: View {
                     HStack {
                         Text("Version")
                         Spacer()
-                        Text("1.0.0 (Build 1)")
-                            .foregroundColor(.secondary)
+                        Text(Self.versionString)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -44,5 +51,9 @@ public struct SettingsView: View {
             }
         }
     }
+}
+
+#Preview {
+    SettingsView()
 }
 #endif
