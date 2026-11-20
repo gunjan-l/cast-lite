@@ -37,6 +37,7 @@ public struct DeviceSelectorView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                     Button("Refresh", action: onRefresh)
+                        .frame(minHeight: 44)
                         .padding(.top, 4)
                 }
                 .frame(maxWidth: .infinity)
@@ -53,6 +54,7 @@ public struct DeviceSelectorView: View {
                             ProgressView()
                             Text("Searching for TVs…")
                         }
+                        .accessibilityElement(children: .combine)
                     }
                 }
             }

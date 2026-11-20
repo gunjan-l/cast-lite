@@ -1,4 +1,4 @@
-import XCTest
+﻿import XCTest
 import CastCore
 @testable import CastLite
 
@@ -93,3 +93,48 @@ private extension StatusInput {
         return copy
     }
 }
+
+final class StatusAnnouncementTests: XCTestCase {
+
+    private func model(_ state: CastConnectionState, tv: String? = "Living Room TV",
+                       reconnecting: Bool = false, error: String? = nil) -> StatusInput {
+        StatusInput(
+            connectionState: state, isScanning: false, isReconnecting: reconnecting,
+            selectedDeviceName: tv, errorMessage: error, localNetworkDeclined: false)
+    }
+
+    func testNoAnnouncementOnFirstRenderOrWhenNothingChanged() {
+        XCTAssertNil(StatusAnnouncement.text(from: nil, to: model(.streaming)))
+        XCTAssertNil(StatusAnnouncement.text(from: model(.ready), to: model(.ready)))
+    }
+
+    func testStartingToMirrorIsAnnouncedWithTheTVName() {
+        let text = StatusAnnouncement.text(from: model(.ready), to: model(.streaming, tv: "Bedroom TV"))
+        XCTAssertEqual(text, "Mirroring started on Bedroom TV.")
+    }
+
+    func testFailureIsAnnouncedWithTheErrorText() {
+        let text = StatusAnnouncement.text(from: model(.streaming), to: model(.error("Timed out")))
+        XCTAssertEqual(text, "Connection problem. Timed out")
+    }
+
+    func testRecoveryAfterReconnectingOrErrorIsAnnounced() {
+        XCTAssertEqual(
+            StatusAnnouncement.text(from: model(.connecting, reconnecting: true), to: model(.streaming)),
+            "Mirroring resumed.")
+        XCTAssertEqual(
+            StatusAnnouncement.text(from: model(.error("Timed out")), to: model(.ready)),
+            "Connection recovered.")
+    }
+
+    func testOtherTransitionsStaySilent() {
+        XCTAssertNil(StatusAnnouncement.text(from: model(.disconnected), to: model(.connecting)))
+        XCTAssertNil(StatusAnnouncement.text(from: model(.streaming), to: model(.ready)))
+    }
+
+    func testSameErrorIsNotAnnouncedTwice() {
+        XCTAssertNil(StatusAnnouncement.text(from: model(.error("x")), to: model(.error("x"))))
+    }
+}
+
+

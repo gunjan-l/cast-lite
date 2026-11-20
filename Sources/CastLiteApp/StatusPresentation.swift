@@ -1,4 +1,4 @@
-import Foundation
+﻿import Foundation
 import CastCore
 
 /// The app state that decides what the status area says. Plain values so the mapping stays pure.
@@ -75,6 +75,33 @@ enum StatusPresentation {
             return StatusModel(symbol: "tv.badge.wifi", title: "Mirroring", subtitle: "Your screen is on \(tv).")
         case .error:
             return StatusModel(symbol: "exclamationmark.triangle", title: "Connection problem", subtitle: "Couldn't mirror to \(tv).")
+        }
+    }
+}
+
+/// Spoken text for status transitions. Only started, failed and recovered speak;
+/// everything else is visible but silent so VoiceOver isn't chatty.
+enum StatusAnnouncement {
+    static func text(from oldInput: StatusInput?, to newInput: StatusInput) -> String? {
+        guard let oldInput, oldInput != newInput else { return nil }
+        let old = StatusPresentation.status(for: oldInput)
+        let new = StatusPresentation.status(for: newInput)
+        guard old != new else { return nil }
+
+        if let error = new.errorText {
+            return old.errorText == error ? nil : "\(new.title). \(error)"
+        }
+
+        let recovering = old.errorText != nil || oldInput.isReconnecting
+        let wasStreaming = oldInput.connectionState == .streaming
+        switch newInput.connectionState {
+        case .streaming where !wasStreaming:
+            if recovering { return "Mirroring resumed." }
+            return "Mirroring started on \(newInput.selectedDeviceName ?? "your TV")."
+        case .ready where recovering:
+            return "Connection recovered."
+        default:
+            return nil
         }
     }
 }
