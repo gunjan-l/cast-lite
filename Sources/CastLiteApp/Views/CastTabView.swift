@@ -171,8 +171,13 @@ public struct CastTabView: View {
                 if let streamURL = streamURL {
                     targetURL = streamURL
                 } else {
-                    let (resolvedURL, _) = appState.networkHelper.resolveStreamURL(port: 8080, path: "media/\(name)")
-                    targetURL = resolvedURL
+                    do {
+                        let (resolvedURL, _) = try appState.networkHelper.resolveStreamURL(port: 8080, path: "media/\(name)")
+                        targetURL = resolvedURL
+                    } catch {
+                        self.appState.errorMessage = error.localizedDescription
+                        return
+                    }
                 }
                 do {
                     try await appState.castMedia(name: name, url: targetURL)

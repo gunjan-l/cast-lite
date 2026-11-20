@@ -23,17 +23,11 @@ public struct MainTabView: View {
                 }
                 .tag(0)
 
-            CastTabView(appState: appState)
-                .tabItem {
-                    Label("Cast", systemImage: "photo.on.rectangle.angled")
-                }
-                .tag(1)
-
             SettingsTabView()
                 .tabItem {
                     Label("Settings", systemImage: "gearshape")
                 }
-                .tag(2)
+                .tag(1)
         }
         .environmentObject(appState)
         .accentColor(.blue)

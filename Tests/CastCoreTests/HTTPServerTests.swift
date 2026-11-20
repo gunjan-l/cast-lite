@@ -119,6 +119,63 @@ final class HTTPServerTests: XCTestCase {
         await server.stop()
     }
 
+    /// Opens a loopback connection and sends only part of a request, so the server
+    /// is left waiting for the rest. Caller closes the returned descriptor.
+    private func openStalledConnection(port: UInt16) throws -> Int32 {
+        #if os(Linux)
+        let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        #else
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        #endif
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let rc = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(rc, 0)
+        let partial = Array("GET /status HTTP/1.1\r\nHost: x\r\n".utf8)
+        _ = send(fd, partial, partial.count, 0)
+        return fd
+    }
+
+    func testSlowRequestDoesNotDelayConcurrentRequest() async throws {
+        let server = HTTPServer(port: 0)
+        let port = try await server.start()
+        await server.registerRoute(path: "/status") { _ in HTTPResponse.ok(body: "ok", contentType: "text/plain") }
+
+        let stalled = try openStalledConnection(port: port)
+        defer { close(stalled) }
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/status")!)
+        request.timeoutInterval = 2
+        let (data, _) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "ok")
+
+        await server.stop()
+    }
+
+    func testStopCompletesWhileSlowRequestIsOpen() async throws {
+        let server = HTTPServer(port: 0)
+        let port = try await server.start()
+
+        let stalled = try openStalledConnection(port: port)
+        defer { close(stalled) }
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let stopped = expectation(description: "stop returned")
+        Task {
+            await server.stop()
+            stopped.fulfill()
+        }
+        await fulfillment(of: [stopped], timeout: 2)
+    }
+
     func testTestPatternGeneratorGeneratesFrames() {
         let generator = TestPatternGenerator(width: 320, height: 240)
         let frame1 = generator.nextFrame(timestamp: 0.0)

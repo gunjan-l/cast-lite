@@ -12,20 +12,18 @@ public actor HTTPServer {
     private var boundPort: UInt16 = 0
     private var listeningSocket: Int32 = -1
     private var isRunning: Bool = false
-    private var routes: [String: RouteHandler] = [:]
-    private var fallbackHandler: RouteHandler?
-    private var acceptTask: Task<Void, Never>?
+    private let state = ServerState()
 
     public init(port: UInt16 = 8080) {
         self.requestedPort = port
     }
 
     public func registerRoute(path: String, handler: @escaping RouteHandler) {
-        routes[path] = handler
+        state.setRoute(path, handler)
     }
 
     public func setFallbackHandler(_ handler: @escaping RouteHandler) {
-        self.fallbackHandler = handler
+        state.setFallback(handler)
     }
 
     public func start() throws -> UInt16 {
@@ -63,6 +61,7 @@ public actor HTTPServer {
                 listeningSocket = sock6
                 boundPort = determineBoundPort(sock: sock6, fallback: requestedPort)
                 isRunning = true
+                state.isRunning = true
                 startAcceptLoop()
                 return boundPort
             }
@@ -105,6 +104,7 @@ public actor HTTPServer {
         listeningSocket = sock
         boundPort = determineBoundPort(sock: sock, fallback: requestedPort)
         isRunning = true
+        state.isRunning = true
 
         startAcceptLoop()
         return boundPort
@@ -135,6 +135,7 @@ public actor HTTPServer {
     public func stop() {
         guard isRunning else { return }
         isRunning = false
+        state.isRunning = false
         if listeningSocket >= 0 {
             #if os(Linux)
             shutdown(listeningSocket, Int32(SHUT_RDWR))
@@ -144,54 +145,49 @@ public actor HTTPServer {
             close(listeningSocket)
             listeningSocket = -1
         }
-        acceptTask?.cancel()
-        acceptTask = nil
     }
 
     private func startAcceptLoop() {
         let sock = listeningSocket
-        acceptTask = Task.detached { [weak self] in
-            while true {
+        let state = self.state
+        // Accept and per-connection reads block in syscalls, so they run on
+        // dispatch threads. The actor only guards start/stop.
+        DispatchQueue.global(qos: .userInitiated).async {
+            while state.isRunning {
                 var clientAddr = sockaddr_storage()
                 var clientLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
                 let clientSock = withUnsafeMutablePointer(to: &clientAddr) { ptr in
                     accept(sock, UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: sockaddr.self), &clientLen)
                 }
-
                 if clientSock < 0 {
-                    guard let self = self, await self.isActive() else { break }
-                    continue
-                }
-
-                guard let self = self else {
-                    close(clientSock)
+                    if state.isRunning { continue }
                     break
                 }
 
                 var sl = linger(l_onoff: 1, l_linger: 3)
                 setsockopt(clientSock, SOL_SOCKET, SO_LINGER, &sl, socklen_t(MemoryLayout<linger>.size))
+                var timeout = timeval(tv_sec: 10, tv_usec: 0)
+                setsockopt(clientSock, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
-                Task.detached {
-                    await self.handleClient(socket: clientSock)
+                DispatchQueue.global(qos: .userInitiated).async {
+                    Self.readRequest(socket: clientSock, state: state)
                 }
             }
         }
     }
 
-    private func isActive() -> Bool {
-        return isRunning && listeningSocket >= 0
+    private static func closeClient(_ socket: Int32) {
+        #if os(Linux)
+        shutdown(socket, Int32(SHUT_WR))
+        #else
+        Darwin.shutdown(socket, SHUT_WR)
+        #endif
+        close(socket)
     }
 
-    private func handleClient(socket: Int32) async {
-        defer {
-            #if os(Linux)
-            shutdown(socket, Int32(SHUT_WR))
-            #else
-            Darwin.shutdown(socket, SHUT_WR)
-            #endif
-            close(socket)
-        }
-
+    /// Blocking read of the request head. Hands the parsed request to an async task so
+    /// route handlers never occupy a dispatch thread.
+    private static func readRequest(socket: Int32, state: ServerState) {
         var incomingData = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
 
@@ -208,6 +204,15 @@ public actor HTTPServer {
 
             if incomingData.count >= 65536 { break }
         }
+
+        let requestData = incomingData
+        Task.detached {
+            await Self.respond(socket: socket, incomingData: requestData, state: state)
+        }
+    }
+
+    private static func respond(socket: Int32, incomingData: Data, state: ServerState) async {
+        defer { closeClient(socket) }
 
         guard !incomingData.isEmpty, let request = HTTPRequestParser.parse(data: incomingData) else {
             let badReq = HTTPResponse(statusCode: 400, statusText: "Bad Request", body: Data("Bad Request".utf8))
@@ -230,10 +235,11 @@ public actor HTTPServer {
         }
 
         let cleanPath = request.path.components(separatedBy: "?").first ?? request.path
+        let (route, fallback) = state.handlers(for: cleanPath)
         let response: HTTPResponse
-        if let handler = routes[cleanPath] {
+        if let handler = route {
             response = await handler(request)
-        } else if let fallback = fallbackHandler {
+        } else if let fallback = fallback {
             response = await fallback(request)
         } else {
             response = HTTPResponse.notFound()
@@ -242,7 +248,7 @@ public actor HTTPServer {
         _ = sendResponse(socket: socket, response: response)
     }
 
-    private func sendResponse(socket: Int32, response: HTTPResponse) -> Bool {
+    private static func sendResponse(socket: Int32, response: HTTPResponse) -> Bool {
         let serialized = response.serialize()
         return serialized.withUnsafeBytes { rawPtr in
             guard let baseAddr = rawPtr.baseAddress else { return false }
@@ -254,5 +260,33 @@ public actor HTTPServer {
             }
             return true
         }
+    }
+}
+
+/// Lock-guarded state shared with connection threads, which run outside the actor.
+private final class ServerState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var routes: [String: HTTPServer.RouteHandler] = [:]
+    private var fallback: HTTPServer.RouteHandler?
+    private var running = false
+
+    var isRunning: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return running }
+        set { lock.lock(); defer { lock.unlock() }; running = newValue }
+    }
+
+    func setRoute(_ path: String, _ handler: @escaping HTTPServer.RouteHandler) {
+        lock.lock(); defer { lock.unlock() }
+        routes[path] = handler
+    }
+
+    func setFallback(_ handler: @escaping HTTPServer.RouteHandler) {
+        lock.lock(); defer { lock.unlock() }
+        fallback = handler
+    }
+
+    func handlers(for path: String) -> (HTTPServer.RouteHandler?, HTTPServer.RouteHandler?) {
+        lock.lock(); defer { lock.unlock() }
+        return (routes[path], fallback)
     }
 }

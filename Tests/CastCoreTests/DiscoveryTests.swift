@@ -339,28 +339,131 @@ final class DiscoveryTests: XCTestCase {
         XCTAssertEqual(parsed["md"], "Chromecast Ultra")
     }
 
-    func testBonjourChromecastNotPrunedWhileSearching() async {
-        let mockBonjour = MockBonjourDiscoveryProvider()
-        let mockTransport = MockSSDPTransport()
-        let engine = DiscoveryEngine(offlineTimeout: 0.1, transport: mockTransport, bonjourProvider: mockBonjour)
-
-        await engine.startDiscovery()
-        let chromecast = MDNSParser.parseChromecast(name: "Cast TV", ipAddress: "192.168.1.99")
-        await engine.addOrUpdateDevice(chromecast)
-
+    func testStaleChromecastEntryIsPruned() async {
+        let engine = DiscoveryEngine(offlineTimeout: 0.1, bonjourProvider: nil)
+        await engine.addOrUpdateDevice(MDNSParser.parseChromecast(name: "Cast TV", ipAddress: "192.168.1.99"))
         var devices = await engine.devices
         XCTAssertEqual(devices.count, 1)
 
-        // Wait past offlineTimeout
         try? await Task.sleep(nanoseconds: 150_000_000)
         await engine.pruneStaleDevices()
 
-        // Chromecast should NOT be pruned while discovery is searching
+        devices = await engine.devices
+        XCTAssertTrue(devices.isEmpty)
+    }
+
+    func testDeviceEqualityAndHashingUseIdOnly() {
+        let a = DiscoveredDevice(id: "x", name: "One", type: .roku, ipAddress: "1.1.1.1", port: 1, lastSeen: Date(timeIntervalSince1970: 0))
+        let b = DiscoveredDevice(id: "x", name: "Two", type: .roku, ipAddress: "1.1.1.1", port: 1, lastSeen: Date())
+        let c = DiscoveredDevice(id: "y", name: "One", type: .roku, ipAddress: "1.1.1.1", port: 1, lastSeen: Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(a, b)
+        XCTAssertEqual(Set([a, b]).count, 1)
+        XCTAssertNotEqual(a, c)
+    }
+
+    private func samsungPacket(usn: String) -> String {
+        """
+        NOTIFY * HTTP/1.1\r
+        HOST: 239.255.255.250:1900\r
+        NT: urn:schemas-upnp-org:device:MediaRenderer:1\r
+        NTS: ssdp:alive\r
+        USN: \(usn)\r
+        Location: http://192.168.1.77:7676/smp_\r
+        Server: Samsung-Linux/4.1 UPnP/1.0\r
+        \r
+        """
+    }
+
+    func testSSDPEntryWithChromecastIPIsSuppressed() async {
+        let engine = DiscoveryEngine(bonjourProvider: nil)
+        await engine.addOrUpdateDevice(MDNSParser.parseChromecast(name: "Android TV", ipAddress: "192.168.1.77"))
+        await engine.processRawSSDPPacket(samsungPacket(usn: "uuid:atv-1"), senderIP: "192.168.1.77")
+
+        let devices = await engine.devices
+        XCTAssertEqual(devices.count, 1)
+        XCTAssertEqual(devices.first?.type, .chromecast)
+    }
+
+    func testChromecastArrivingAfterSSDPReplacesSSDPEntry() async {
+        let engine = DiscoveryEngine(bonjourProvider: nil)
+        await engine.processRawSSDPPacket(samsungPacket(usn: "uuid:atv-1"), senderIP: "192.168.1.77")
+        var devices = await engine.devices
+        XCTAssertEqual(devices.count, 1)
+
+        await engine.addOrUpdateDevice(MDNSParser.parseChromecast(name: "Android TV", ipAddress: "192.168.1.77"))
         devices = await engine.devices
         XCTAssertEqual(devices.count, 1)
-        XCTAssertEqual(devices.first?.id, "chromecast-192.168.1.99:8009")
+        XCTAssertEqual(devices.first?.type, .chromecast)
+    }
+
+    func testSuppressedSSDPEntryKeepsChromecastFresh() async {
+        let engine = DiscoveryEngine(offlineTimeout: 0.2, bonjourProvider: nil)
+        await engine.addOrUpdateDevice(MDNSParser.parseChromecast(name: "Android TV", ipAddress: "192.168.1.77"))
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        await engine.processRawSSDPPacket(samsungPacket(usn: "uuid:atv-1"), senderIP: "192.168.1.77")
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        await engine.pruneStaleDevices()
+
+        let devices = await engine.devices
+        XCTAssertEqual(devices.count, 1)
+    }
+
+    func testBonjourRemovalRemovesChromecastEntry() async {
+        let mockBonjour = MockBonjourDiscoveryProvider()
+        let engine = DiscoveryEngine(transport: MockSSDPTransport(), bonjourProvider: mockBonjour)
+        await engine.startDiscovery()
+
+        let chromecast = MDNSParser.parseChromecast(name: "Basement TV", ipAddress: "192.168.1.55", port: 8009)
+        mockBonjour.simulateDeviceFound(chromecast)
+        for _ in 0..<40 where await engine.devices.isEmpty {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        var devices = await engine.devices
+        XCTAssertEqual(devices.count, 1)
+
+        mockBonjour.simulateDeviceRemoved(id: chromecast.id)
+        for _ in 0..<40 where !(await engine.devices.isEmpty) {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        devices = await engine.devices
+        XCTAssertTrue(devices.isEmpty)
 
         await engine.stopDiscovery()
+    }
+
+    func testReselectingSameDeviceIsNoOp() async {
+        let recorder = SelectionRecorder()
+        let controller = DeviceSelectionController { device in await recorder.finish(device?.id) }
+        let a = DiscoveredDevice(id: "a", name: "A", type: .roku, ipAddress: "1.1.1.1", port: 1)
+        let aLater = DiscoveredDevice(id: "a", name: "Renamed", type: .roku, ipAddress: "1.1.1.1", port: 1)
+
+        controller.select(a)
+        controller.select(aLater)
+        await controller.waitUntilIdle()
+
+        let finished = await recorder.finished
+        XCTAssertEqual(finished, ["a"])
+    }
+
+    func testRapidSelectionCancelsEarlierWork() async {
+        let recorder = SelectionRecorder()
+        let controller = DeviceSelectionController { device in
+            do {
+                try await Task.sleep(nanoseconds: 200_000_000)
+                await recorder.finish(device?.id)
+            } catch {}
+        }
+        let a = DiscoveredDevice(id: "a", name: "A", type: .roku, ipAddress: "1.1.1.1", port: 1)
+        let b = DiscoveredDevice(id: "b", name: "B", type: .roku, ipAddress: "1.1.1.2", port: 1)
+        let c = DiscoveredDevice(id: "c", name: "C", type: .roku, ipAddress: "1.1.1.3", port: 1)
+
+        controller.select(a)
+        controller.select(b)
+        controller.select(c)
+        await controller.waitUntilIdle()
+
+        let finished = await recorder.finished
+        XCTAssertEqual(finished, ["c"])
     }
 
     func testSSDPParserNormalizesUSNBaseUUID() {
@@ -473,4 +576,9 @@ final class DiscoveryTests: XCTestCase {
         XCTAssertEqual(dev.controlURL?.absoluteString, "http://[fe80::1]:8080/upnp/control/AVTransport1")
         XCTAssertEqual(dev.ecpURL(path: "query/apps")?.absoluteString, "http://[fe80::1]:8080/query/apps")
     }
+}
+
+private actor SelectionRecorder {
+    private(set) var finished: [String?] = []
+    func finish(_ id: String?) { finished.append(id) }
 }

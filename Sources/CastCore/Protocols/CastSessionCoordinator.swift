@@ -24,6 +24,8 @@ public enum CastFailure: Error, Equatable, Sendable {
     /// MEDIA_STATUS idleReason ERROR (or similar receiver-side playback error).
     case receiverError(String)
     case reconnectFailed
+    /// The phone has no Wi-Fi address the TV could fetch the stream from.
+    case networkUnavailable(String)
 
     public var message: String {
         switch self {
@@ -41,6 +43,8 @@ public enum CastFailure: Error, Equatable, Sendable {
             return "The TV reported a playback error: \(reason)"
         case .reconnectFailed:
             return "TV disconnected. Streaming stopped."
+        case .networkUnavailable(let reason):
+            return reason
         }
     }
 }
@@ -256,9 +260,14 @@ public actor CastSessionCoordinator {
         self.activeStreamController = streamController
         let boundPort = try await streamController.start()
         let portToUse = UInt16(port ?? Int(boundPort))
-        let (resolvedURL, resolution) = networkHelper.resolveStreamURL(port: portToUse, path: "stream.m3u8")
-        if resolution.isFallback {
-            self.errorMessage = resolution.warningMessage
+        let resolvedURL: String
+        do {
+            (resolvedURL, _) = try networkHelper.resolveStreamURL(port: portToUse, path: "stream.m3u8")
+        } catch {
+            await streamController.stop()
+            self.activeStreamController = nil
+            fail(.networkUnavailable(error.localizedDescription))
+            throw error
         }
         self.currentMediaURL = resolvedURL
 

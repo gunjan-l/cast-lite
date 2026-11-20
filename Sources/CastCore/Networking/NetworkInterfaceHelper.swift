@@ -108,23 +108,24 @@ public struct SystemNetworkInterfaceProvider: NetworkInterfaceProvider {
 
 public struct IPResolutionResult: Equatable, Sendable {
     public let host: String
-    public let isFallback: Bool
-    public let interfaceName: String?
-    public let warningMessage: String?
+    public let interfaceName: String
 
-    public init(
-        host: String,
-        isFallback: Bool,
-        interfaceName: String? = nil,
-        warningMessage: String? = nil
-    ) {
+    public init(host: String, interfaceName: String) {
         self.host = host
-        self.isFallback = isFallback
         self.interfaceName = interfaceName
-        self.warningMessage = warningMessage
     }
 }
 
+public enum StreamURLError: Error, Equatable, Sendable, LocalizedError {
+    case noWiFiIPv4Address
+
+    public var errorDescription: String? {
+        switch self {
+        case .noWiFiIPv4Address:
+            return "No Wi-Fi network address. Connect to Wi-Fi to mirror."
+        }
+    }
+}
 public struct NetworkInterfaceHelper: Sendable {
     public static let shared = NetworkInterfaceHelper()
     public let provider: any NetworkInterfaceProvider
@@ -151,35 +152,17 @@ public struct NetworkInterfaceHelper: Sendable {
         return nil
     }
 
-    public func resolveStreamIP(
-        preferredInterface: String = "en0",
-        fallbackHost: String = "localhost",
-        fallbackToAnyNonLoopback: Bool = false
-    ) -> IPResolutionResult {
+    /// Resolves the address a TV or browser should use. Throws when the phone has no
+    /// usable non-loopback IPv4 address; never falls back to localhost.
+    public func resolveStreamIP(preferredInterface: String = "en0") throws -> IPResolutionResult {
         if let ip = getIPv4Address(for: preferredInterface) {
-            return IPResolutionResult(
-                host: ip,
-                isFallback: false,
-                interfaceName: preferredInterface,
-                warningMessage: nil
-            )
-        } else if fallbackToAnyNonLoopback, let alt = getFirstNonLoopbackIPv4Address() {
-            return IPResolutionResult(
-                host: alt.address,
-                isFallback: false,
-                interfaceName: alt.interfaceName,
-                warningMessage: nil
-            )
-        } else {
-            return IPResolutionResult(
-                host: fallbackHost,
-                isFallback: true,
-                interfaceName: nil,
-                warningMessage: "Wi-Fi is disconnected. Mirroring is only accessible locally on this device via \(fallbackHost)."
-            )
+            return IPResolutionResult(host: ip, interfaceName: preferredInterface)
         }
+        if let alt = getFirstNonLoopbackIPv4Address() {
+            return IPResolutionResult(host: alt.address, interfaceName: alt.interfaceName)
+        }
+        throw StreamURLError.noWiFiIPv4Address
     }
-
     public static func formatStreamURL(host: String, port: UInt16, path: String = "view") -> String {
         let cleanPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
         let formattedHost = (host.contains(":") && !host.hasPrefix("[")) ? "[\(host)]" : host
@@ -189,14 +172,9 @@ public struct NetworkInterfaceHelper: Sendable {
     public func resolveStreamURL(
         port: UInt16,
         preferredInterface: String = "en0",
-        fallbackHost: String = "localhost",
         path: String = "view"
-    ) -> (url: String, resolution: IPResolutionResult) {
-        let resolution = resolveStreamIP(
-            preferredInterface: preferredInterface,
-            fallbackHost: fallbackHost,
-            fallbackToAnyNonLoopback: true
-        )
+    ) throws -> (url: String, resolution: IPResolutionResult) {
+        let resolution = try resolveStreamIP(preferredInterface: preferredInterface)
         let url = Self.formatStreamURL(host: resolution.host, port: port, path: path)
         return (url, resolution)
     }
