@@ -3,8 +3,9 @@ import SwiftUI
 import CastCore
 
 @MainActor
-public struct MirrorTabView: View {
+public struct MirrorView: View {
     @ObservedObject public var appState: CastAppState
+    @State private var showSettings = false
     @State private var showPermissionModal = false
     @State private var hasGrantedLocalNetwork = false
     @State private var selectedQuality = 0 // 0: Ultra-Low Latency, 1: High Definition (1080p)
@@ -158,6 +159,20 @@ public struct MirrorTabView: View {
                 )
             }
             .navigationTitle("Cast-Lite")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel("Settings")
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+            }
             .sheet(isPresented: $showPermissionModal) {
                 LocalNetworkPermissionModal(isPresented: $showPermissionModal) {
                     hasGrantedLocalNetwork = true
