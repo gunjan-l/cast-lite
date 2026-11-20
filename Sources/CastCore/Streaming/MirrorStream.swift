@@ -24,10 +24,16 @@ public final class MirrorStream: @unchecked Sendable {
     private var running = false
     private var stopped = false
     private var boundPort: UInt16 = 0
+    private var debugProvider: (@Sendable () -> Data)?
 
     public init(port: UInt16 = 8080, windowSize: Int = HLSSegmenter.defaultWindowSize) {
         self.server = HTTPServer(port: port)
         self.segmenter = HLSSegmenter(windowSize: windowSize)
+    }
+
+    /// Replaces the body of /debug. The owner of the stream (e.g. MirrorSession) supplies richer JSON.
+    public func setDebugProvider(_ provider: (@Sendable () -> Data)?) {
+        lock.lock(); debugProvider = provider; lock.unlock()
     }
 
     public var isStreaming: Bool {
@@ -58,6 +64,9 @@ public final class MirrorStream: @unchecked Sendable {
             )
         }
         await server.registerRoute(path: "/debug") { _ in
+            if let custom = owner.currentDebugProvider() {
+                return HTTPResponse.ok(data: custom(), contentType: "application/json")
+            }
             let s = owner.status()
             let json = "{\"phase\":\"\(s.phase.rawValue)\",\"segmentCount\":\(s.segmentCount),\"port\":\(s.port)}"
             return HTTPResponse.ok(body: json, contentType: "application/json")
@@ -112,6 +121,11 @@ public final class MirrorStream: @unchecked Sendable {
             phase = stopped ? .stopped : .idle
         }
         return MirrorStreamStatus(phase: phase, port: boundPort, segmentCount: count)
+    }
+
+    fileprivate func currentDebugProvider() -> (@Sendable () -> Data)? {
+        lock.lock(); defer { lock.unlock() }
+        return debugProvider
     }
 
     private func currentPortIfRunning() -> UInt16? {
