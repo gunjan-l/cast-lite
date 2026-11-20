@@ -170,9 +170,15 @@ public actor CastSessionCoordinator {
         self.activeStreamController = streamController
         let boundPort = try await streamController.start()
         let portToUse = UInt16(port ?? Int(boundPort))
-        let (resolvedURL, resolution) = networkHelper.resolveStreamURL(port: portToUse, path: "stream.m3u8")
-        if resolution.isFallback {
-            self.errorMessage = resolution.warningMessage
+        let resolvedURL: String
+        do {
+            (resolvedURL, _) = try networkHelper.resolveStreamURL(port: portToUse, path: "stream.m3u8")
+        } catch {
+            await streamController.stop()
+            self.activeStreamController = nil
+            self.errorMessage = error.localizedDescription
+            updateConnectionState(.error(error.localizedDescription))
+            throw error
         }
         self.currentMediaURL = resolvedURL
 
