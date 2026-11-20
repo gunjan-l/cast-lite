@@ -6,6 +6,8 @@ public enum CastTransportError: Error, Equatable, Sendable {
     case connectionFailed(String)
     case sendFailed(String)
     case cancelled
+    /// The transport cannot proceed (NWConnection `.waiting`), e.g. Local Network permission denied.
+    case waiting(String)
 }
 
 public protocol CastTransport: Sendable {
@@ -15,3 +17,4 @@ public protocol CastTransport: Sendable {
     func receiveStream() -> AsyncThrowingStream<Data, Error>
     func close() async
 }
+

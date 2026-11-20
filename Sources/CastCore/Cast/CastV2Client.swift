@@ -40,6 +40,7 @@ public actor CastV2Client {
     private var heartbeatTask: Task<Void, Never>?
     private var receiveTask: Task<Void, Never>?
     public private(set) var onDisconnect: (@Sendable () async -> Void)?
+    public private(set) var onUnsolicitedMessage: (@Sendable (CastMessage, [String: Any]) async -> Void)?
 
     private final class ContinuationGate: @unchecked Sendable {
         private let lock = NSLock()
@@ -83,6 +84,12 @@ public actor CastV2Client {
         self.clientSourceId = clientSourceId
         self.heartbeatInterval = heartbeatInterval
         self.requestTimeout = requestTimeout
+    }
+
+    /// Receives every inbound message that did not complete a pending request
+    /// (receiver-initiated MEDIA_STATUS, CLOSE, ...), with its decoded JSON payload.
+    public func setOnUnsolicitedMessage(_ handler: (@Sendable (CastMessage, [String: Any]) async -> Void)?) {
+        self.onUnsolicitedMessage = handler
     }
 
     public func setOnDisconnect(_ handler: (@Sendable () async -> Void)?) {
@@ -390,6 +397,8 @@ public actor CastV2Client {
             if let reqId = reqId, let pending = pendingRequests.removeValue(forKey: reqId) {
                 pending.timeoutTask.cancel()
                 pending.gate.resume(returning: json)
+            } else if message.namespace != CastNamespaces.heartbeat {
+                await onUnsolicitedMessage?(message, json)
             }
         }
     }
@@ -429,3 +438,4 @@ public actor CastV2Client {
         }
     }
 }
+
