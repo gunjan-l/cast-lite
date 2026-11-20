@@ -2,6 +2,8 @@
 import SwiftUI
 import CastCore
 
+/// Content of the TV picker sheet. The presenting view owns dismissal: it
+/// closes the sheet when `selectedDevice` is set to a non-nil value.
 public struct DeviceSelectorView: View {
     @Binding public var selectedDevice: DiscoveredDevice?
     public var devices: [DiscoveredDevice]
@@ -22,67 +24,114 @@ public struct DeviceSelectorView: View {
 
     public var body: some View {
         List {
-            Section(header: HStack {
-                Text("Discovered Devices (\(devices.count))")
-                Spacer()
-                if isScanning {
-                    ProgressView()
-                        .scaleEffect(0.8)
+            if devices.isEmpty && !isScanning {
+                VStack(spacing: 8) {
+                    Image(systemName: "tv.slash")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text("No TVs found")
+                        .font(.headline)
+                    Text("Check that your iPhone and TV are on the same Wi-Fi network, then refresh.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Refresh", action: onRefresh)
+                        .padding(.top, 4)
                 }
-            }) {
-                if devices.isEmpty {
-                    HStack {
-                        Spacer()
-                        VStack(spacing: 8) {
-                            Image(systemName: "tv.slash")
-                                .font(.system(size: 32))
-                                .foregroundColor(.secondary)
-                            Text("No devices found yet")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                            Text("Pull down or tap refresh to scan")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.vertical, 16)
-                        Spacer()
-                    }
-                } else {
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+                .listRowBackground(Color.clear)
+            } else {
+                Section {
                     ForEach(devices) { device in
-                        Button(action: {
-                            selectedDevice = device
-                        }) {
-                            HStack(spacing: 12) {
-                                Image(systemName: device.type.systemIcon)
-                                    .font(.title2)
-                                    .foregroundColor(.blue)
-                                    .frame(width: 32)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(device.name)
-                                        .font(.headline)
-                                        .foregroundColor(.primary)
-                                    Text("\(device.type.displayName) • \(device.ipAddress)")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-
-                                Spacer()
-
-                                if selectedDevice?.id == device.id {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundColor(.green)
-                                }
-                            }
-                            .padding(.vertical, 4)
+                        deviceRow(device)
+                    }
+                } header: {
+                    if isScanning {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Searching for TVs…")
                         }
                     }
                 }
             }
         }
-        .refreshable {
-            onRefresh()
+        .listStyle(.insetGrouped)
+        .refreshable { onRefresh() }
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button {
+                    onRefresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel("Refresh")
+                .disabled(isScanning)
+            }
+        }
+    }
+
+    private func deviceRow(_ device: DiscoveredDevice) -> some View {
+        let isSelected = selectedDevice?.id == device.id
+        return Button {
+            selectedDevice = device
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: device.type.systemIcon)
+                    .foregroundStyle(.tint)
+                    .frame(width: 32)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(device.name)
+                        .foregroundStyle(.primary)
+                    Text("\(device.type.displayName) • \(device.ipAddress)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.tint)
+                        .accessibilityHidden(true)
+                }
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+#if DEBUG && canImport(Combine)
+private struct DevicePickerPreview: View {
+    @StateObject var state: CastAppState
+    var body: some View {
+        NavigationStack {
+            DeviceSelectorView(
+                selectedDevice: Binding(
+                    get: { state.selectedDevice },
+                    set: { state.selectedDevice = $0 }
+                ),
+                devices: state.discoveredDevices,
+                isScanning: state.isScanning,
+                onRefresh: {}
+            )
+            .navigationTitle("Choose a TV")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }
+
+#Preview("Picker - scanning") {
+    DevicePickerPreview(state: .preview(.scanning))
+}
+#Preview("Picker - populated") {
+    DevicePickerPreview(state: .preview(.streaming))
+}
+#Preview("Picker - empty") {
+    DevicePickerPreview(state: .preview(.noDevices))
+}
+#endif
 #endif
