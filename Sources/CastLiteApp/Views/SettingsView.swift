@@ -55,7 +55,9 @@ public struct SettingsView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     SettingsView()
 }
+#endif
 #endif

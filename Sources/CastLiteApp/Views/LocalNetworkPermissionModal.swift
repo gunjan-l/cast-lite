@@ -7,6 +7,7 @@ import SwiftUI
 public struct LocalNetworkPermissionModal: View {
     @Binding public var isPresented: Bool
     public var onAllow: () -> Void
+    @ScaledMetric(relativeTo: .largeTitle) private var symbolSize: CGFloat = 48
 
     public init(isPresented: Binding<Bool>, onAllow: @escaping () -> Void) {
         self._isPresented = isPresented
@@ -16,7 +17,7 @@ public struct LocalNetworkPermissionModal: View {
     public var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "wifi")
-                .font(.system(size: 48))
+                .font(.system(size: symbolSize))
                 .foregroundStyle(.tint)
                 .accessibilityHidden(true)
 

@@ -74,9 +74,9 @@ public struct MirrorView: View {
                     DeviceSelectorView(
                         selectedDevice: Binding(
                             get: { appState.selectedDevice },
-                            set: { newDev in
-                                appState.selectDevice(newDev)
-                                if newDev != nil { showDevicePicker = false }
+                            set: { pickedDevice in
+                                appState.selectDevice(pickedDevice)
+                                if pickedDevice != nil { showDevicePicker = false }
                             }
                         ),
                         devices: appState.discoveredDevices,
@@ -109,9 +109,15 @@ public struct MirrorView: View {
         }
         // Start is the system broadcast picker, which gives no callback. The
         // streaming flag flipping is the observable moment mirroring starts or
-        // stops, so the light haptic hangs off that and touches no broadcast logic.
-        .onChange(of: appState.isStreaming) { _ in
-            Self.lightHaptic()
+        // stops; MirrorHaptic keeps error-driven stops silent.
+        .onChange(of: appState.isStreaming) { isStreaming in
+            if MirrorHaptic.shouldFire(
+                wasStreaming: !isStreaming,
+                isStreaming: isStreaming,
+                errorMessage: appState.errorMessage
+            ) {
+                Self.lightHaptic()
+            }
         }
         .onChange(of: statusInput) { new in
             if let text = StatusAnnouncement.text(from: lastAnnouncedInput, to: new) {

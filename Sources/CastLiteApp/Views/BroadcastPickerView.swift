@@ -31,6 +31,7 @@ public struct BroadcastPickerView: UIViewRepresentable {
         // Mirror SwiftUI's .disabled onto the system picker's inner button.
         for case let button as UIButton in uiView.subviews {
             button.isEnabled = context.environment.isEnabled
+            button.accessibilityLabel = "Start or stop mirroring"
         }
     }
 }

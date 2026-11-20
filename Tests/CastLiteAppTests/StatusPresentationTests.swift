@@ -137,4 +137,21 @@ final class StatusAnnouncementTests: XCTestCase {
     }
 }
 
+final class MirrorHapticTests: XCTestCase {
+    func testStartFires() {
+        XCTAssertTrue(MirrorHaptic.shouldFire(wasStreaming: false, isStreaming: true, errorMessage: nil))
+    }
 
+    func testUserStopFires() {
+        XCTAssertTrue(MirrorHaptic.shouldFire(wasStreaming: true, isStreaming: false, errorMessage: nil))
+    }
+
+    func testStopCausedByErrorIsSilent() {
+        XCTAssertFalse(MirrorHaptic.shouldFire(wasStreaming: true, isStreaming: false, errorMessage: "TV disconnected."))
+    }
+
+    func testNoFlipIsSilent() {
+        XCTAssertFalse(MirrorHaptic.shouldFire(wasStreaming: true, isStreaming: true, errorMessage: nil))
+        XCTAssertFalse(MirrorHaptic.shouldFire(wasStreaming: false, isStreaming: false, errorMessage: nil))
+    }
+}

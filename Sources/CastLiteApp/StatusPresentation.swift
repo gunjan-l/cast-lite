@@ -105,3 +105,12 @@ enum StatusAnnouncement {
         }
     }
 }
+
+/// Light haptic on Start and on a user Stop only; a stream that ended with an
+/// error message (disconnect, failure) stays silent.
+enum MirrorHaptic {
+    static func shouldFire(wasStreaming: Bool, isStreaming: Bool, errorMessage: String?) -> Bool {
+        guard wasStreaming != isStreaming else { return false }
+        return isStreaming || errorMessage == nil
+    }
+}
