@@ -9,7 +9,8 @@ let package = Package(
     ],
     products: [
         .library(name: "CastCore", targets: ["CastCore"]),
-        .executable(name: "CastLiteServer", targets: ["CastLiteServer"])
+        .executable(name: "CastLiteServer", targets: ["CastLiteServer"]),
+        .executable(name: "CastLiteHarness", targets: ["CastLiteHarness"])
     ],
     dependencies: [],
     targets: [
@@ -22,6 +23,11 @@ let package = Package(
             name: "CastLiteServer",
             dependencies: ["CastCore"],
             path: "Sources/CastLiteServer"
+        ),
+        .executableTarget(
+            name: "CastLiteHarness",
+            dependencies: ["CastCore"],
+            path: "Sources/CastLiteHarness"
         ),
         .testTarget(
             name: "CastCoreTests",
