@@ -6,7 +6,6 @@ import CastCore
 @MainActor
 public final class CastAppState: ObservableObject {
     public let coordinator: CastSessionCoordinator
-    public let mirrorStream: MirrorStream
     public let networkHelper: NetworkInterfaceHelper
     public let discoveryEngine: DiscoveryEngine
     public let subscriptionManager: SubscriptionManager
@@ -28,13 +27,11 @@ public final class CastAppState: ObservableObject {
 
     public init(
         coordinator: CastSessionCoordinator = CastSessionCoordinator(),
-        mirrorStream: MirrorStream = MirrorStream(),
         networkHelper: NetworkInterfaceHelper = NetworkInterfaceHelper(),
         discoveryEngine: DiscoveryEngine = DiscoveryEngine(),
         subscriptionManager: SubscriptionManager = SubscriptionManager()
     ) {
         self.coordinator = coordinator
-        self.mirrorStream = mirrorStream
         self.networkHelper = networkHelper
         self.discoveryEngine = discoveryEngine
         self.subscriptionManager = subscriptionManager
@@ -74,7 +71,8 @@ public final class CastAppState: ObservableObject {
         self.playbackPosition = pos
         self.currentVolume = vol * 100.0
         self.selectedDevice = dev
-        self.errorMessage = err
+        // Errors are cleared only by the event that resolves them (a successful connect), never by a sync.
+        if let err { self.errorMessage = err }
         self.isReconnecting = isRecon
         if let mediaURL = mediaURL, !mediaURL.isEmpty {
             self.streamURL = mediaURL
@@ -99,30 +97,12 @@ public final class CastAppState: ObservableObject {
         Task {
             do {
                 try await coordinator.connect(to: device)
+                self.errorMessage = nil
                 await syncCoordinatorProperties()
             } catch {
                 self.errorMessage = error.localizedDescription
             }
         }
-    }
-
-    public func startScreenMirror() async throws -> String {
-        let url = try await coordinator.startScreenMirror(
-            mirrorStream: mirrorStream,
-            networkHelper: networkHelper
-        )
-        self.isStreaming = true
-        self.streamURL = url
-        self.errorMessage = nil
-        await syncCoordinatorProperties()
-        return url
-    }
-
-    public func stopScreenMirror() async {
-        try? await coordinator.stopScreenMirror(mirrorStream: mirrorStream)
-        self.isStreaming = false
-        self.streamURL = ""
-        await syncCoordinatorProperties()
     }
 
     public func castMedia(name: String, url: String) async throws {
@@ -174,10 +154,11 @@ public final class CastAppState: ObservableObject {
 
     public func stopPlayback() {
         Task {
-            if self.isStreaming {
-                await self.mirrorStream.stop()
+            do {
+                try await self.coordinator.stop()
+            } catch {
+                self.errorMessage = error.localizedDescription
             }
-            try? await self.coordinator.stop()
             self.isPlaying = false
             self.streamURL = ""
             await self.syncCoordinatorProperties()
