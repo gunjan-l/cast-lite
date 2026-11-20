@@ -1,6 +1,9 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+/// Explains why Cast-Lite needs Local Network access before the system asks.
+/// One symbol, one headline, two short lines, one primary button.
+/// Dismissing the sheet without tapping the button counts as declining; the presenter decides what that means.
 public struct LocalNetworkPermissionModal: View {
     @Binding public var isPresented: Bool
     public var onAllow: () -> Void
@@ -11,57 +14,44 @@ public struct LocalNetworkPermissionModal: View {
     }
 
     public var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "network")
-                .font(.system(size: 56))
-                .foregroundColor(.blue)
-                .padding(.top, 24)
+        VStack(spacing: 16) {
+            Image(systemName: "wifi")
+                .font(.system(size: 48))
+                .foregroundStyle(.tint)
+                .accessibilityHidden(true)
 
-            Text("Local Network Access")
+            Text("Find TVs on your Wi-Fi")
                 .font(.title2.bold())
-
-            Text("Cast-Lite needs permission to discover Smart TVs, streaming devices, and computers on your Wi-Fi network.")
-                .font(.body)
-                .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal)
 
-            VStack(alignment: .leading, spacing: 12) {
-                Label("Discover Samsung, LG, Roku & Chromecast TVs", systemImage: "tv")
-                Label("Stream live video without internet upload", systemImage: "bolt.fill")
-                Label("Your media stays 100% private on your home network", systemImage: "lock.shield.fill")
+            VStack(spacing: 8) {
+                Text("Cast-Lite needs Local Network access to see TVs near you.")
+                Text("Your screen stays on your home network.")
             }
-            .font(.subheadline)
-            .padding()
-            .background(Color(.systemGray6))
-            .cornerRadius(12)
-            .padding(.horizontal)
+            .font(.body)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
 
-            Spacer()
+            Spacer(minLength: 8)
 
-            Button(action: {
+            Button {
                 isPresented = false
                 onAllow()
-            }) {
-                Text("Continue & Allow Access")
+            } label: {
+                Text("Continue")
                     .fontWeight(.semibold)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(12)
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
-            .padding(.horizontal)
-
-            Button(action: {
-                isPresented = false
-            }) {
-                Text("Not Now")
-                    .foregroundColor(.secondary)
-            }
-            .padding(.bottom, 16)
+            .buttonStyle(.borderedProminent)
         }
-        .padding()
+        .padding(24)
+        .presentationDetents([.medium])
     }
 }
+
+#if DEBUG
+#Preview("Permission sheet") {
+    LocalNetworkPermissionModal(isPresented: .constant(true), onAllow: {})
+}
+#endif
 #endif

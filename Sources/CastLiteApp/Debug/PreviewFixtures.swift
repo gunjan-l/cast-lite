@@ -11,6 +11,7 @@ enum PreviewFixtures {
         case scanning
         case streaming
         case error
+        case noDevices
     }
 
     static let livingRoomTV = DiscoveredDevice(
@@ -27,6 +28,8 @@ enum PreviewFixtures {
         switch scenario {
         case .idle:
             state.discoveredDevices = [livingRoomTV, bedroomRoku]
+        case .noDevices:
+            break
         case .scanning:
             state.isScanning = true
         case .streaming:

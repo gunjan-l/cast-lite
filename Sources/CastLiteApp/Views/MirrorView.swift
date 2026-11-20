@@ -9,8 +9,14 @@ public struct MirrorView: View {
     @State private var showPermissionModal = false
     @State private var showDevicePicker = false
     @State private var hasGrantedLocalNetwork = false
+    @State private var localNetworkDeclined: Bool
 
-    public init(appState: CastAppState? = nil, networkHelper: NetworkInterfaceHelper = NetworkInterfaceHelper()) {
+    public init(
+        appState: CastAppState? = nil,
+        networkHelper: NetworkInterfaceHelper = NetworkInterfaceHelper(),
+        localNetworkDeclined: Bool = false
+    ) {
+        self._localNetworkDeclined = State(initialValue: localNetworkDeclined)
         if let state = appState {
             self.appState = state
         } else {
@@ -25,7 +31,7 @@ public struct MirrorView: View {
             isReconnecting: appState.isReconnecting,
             selectedDeviceName: appState.selectedDevice?.name,
             errorMessage: appState.errorMessage,
-            localNetworkDeclined: false
+            localNetworkDeclined: localNetworkDeclined
         ))
     }
 
@@ -80,9 +86,13 @@ public struct MirrorView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showPermissionModal) {
+            .sheet(isPresented: $showPermissionModal, onDismiss: {
+                // Closing the sheet without the button is a decline.
+                localNetworkDeclined = !hasGrantedLocalNetwork
+            }) {
                 LocalNetworkPermissionModal(isPresented: $showPermissionModal) {
                     hasGrantedLocalNetwork = true
+                    localNetworkDeclined = false
                     appState.refreshDevices()
                 }
             }
@@ -160,5 +170,8 @@ public struct MirrorView: View {
 #Preview("Scanning") { MirrorView(appState: .preview(.scanning)) }
 #Preview("Streaming") { MirrorView(appState: .preview(.streaming)) }
 #Preview("Error") { MirrorView(appState: .preview(.error)) }
+#Preview("Local Network declined") {
+    MirrorView(appState: .preview(.noDevices), localNetworkDeclined: true)
+}
 #endif
 #endif
