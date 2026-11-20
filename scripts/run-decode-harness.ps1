@@ -2,6 +2,7 @@
 Decode harness: proves the HLS served by MirrorSession decodes with real ffmpeg (podman, local only).
 
 Rerun:  powershell -File scripts\run-decode-harness.ps1
+Proof:  powershell -File scripts\run-decode-harness.ps1 -SelfTest   (negative cases must each exit non-zero)
 Needs:  podman (machine running), network access to pull swift:5.10 and alpine:3.20.
 Steps:  1. ffmpeg container generates 1280x720 H.264 (1s GOP, no B-frames, headers repeated per keyframe).
         2. swift container runs CastLiteHarness: splits it into access units (90 kHz PTS) and feeds
@@ -10,7 +11,7 @@ Steps:  1. ffmpeg container generates 1280x720 H.264 (1s GOP, no B-frames, heade
 Fails on: any ffmpeg decoder error/warning, frame count below 80% of the completed GOPs, PTS going backwards.
 Exit code is non-zero on failure.
 #>
-param([int]$Seconds = 5, [int]$Fps = 25)
+param([int]$Seconds = 5, [int]$Fps = 25, [switch]$SelfTest)
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path "$PSScriptRoot\..").Path
 $work = Join-Path ([IO.Path]::GetTempPath()) "castlite-harness"
@@ -23,6 +24,16 @@ $alpine = "docker.io/library/alpine:3.20"
 $swift = "docker.io/library/swift:5.10"
 
 if (-not (podman info 2>$null)) { podman machine start }
+
+if ($SelfTest) {
+    # Proves the checks bite: a good control passes; corrupted segment, too few frames and backwards PTS all fail.
+    Write-Host "Decode harness self-test (ffmpeg container)..." -ForegroundColor Cyan
+    podman run --rm -v "${work}:/work:z" -v "${repoRoot}\scripts\harness:/harness:ro,z" $alpine sh -c "apk add --no-cache ffmpeg curl >/dev/null && sh /harness/self-test.sh"
+    $exit = $LASTEXITCODE
+    if ($exit -eq 0) { Write-Host "Self-test PASSED (every negative case failed as expected)" -ForegroundColor Green } else { Write-Host "Self-test FAILED" -ForegroundColor Red }
+    exit $exit
+}
+
 podman rm -f $server 2>$null | Out-Null
 podman network exists $net 2>$null; if ($LASTEXITCODE -ne 0) { podman network create $net | Out-Null }
 

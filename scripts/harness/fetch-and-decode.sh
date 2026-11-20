@@ -1,27 +1,33 @@
 #!/bin/sh
 # Runs inside the ffmpeg container. Polls the served HLS, saves playlist + segments, then decodes.
 # Usage: fetch-and-decode.sh <base-url> <expected-min-frames> <poll-seconds>
+# Self-test: with FIXTURE_DIR set (containing latest.m3u8 + segments) nothing is fetched; see self-test.sh.
 BASE="$1"; MIN_FRAMES="$2"; POLL="$3"
 OUT=/work/fetched
 rm -rf "$OUT"; mkdir -p "$OUT"
 fail() { echo "HARNESS FAIL: $*"; exit 1; }
 
-i=0
-until curl -sf "$BASE/stream.m3u8" -o "$OUT/probe.m3u8"; do
-  i=$((i+1)); [ $i -gt 120 ] && fail "playlist never became available at $BASE/stream.m3u8"
-  sleep 0.5
-done
-echo "playlist available"
+if [ -n "${FIXTURE_DIR:-}" ]; then
+  # Self-test mode: decode a prepared playlist + segments instead of fetching them.
+  cp -r "$FIXTURE_DIR"/. "$OUT"/
+else
+  i=0
+  until curl -sf "$BASE/stream.m3u8" -o "$OUT/probe.m3u8"; do
+    i=$((i+1)); [ $i -gt 120 ] && fail "playlist never became available at $BASE/stream.m3u8"
+    sleep 0.5
+  done
+  echo "playlist available"
 
-end=$(( $(date +%s) + POLL ))
-while [ "$(date +%s)" -lt "$end" ]; do
-  if curl -sf "$BASE/stream.m3u8" -o "$OUT/latest.m3u8"; then
-    for seg in $(grep -v '^#' "$OUT/latest.m3u8"); do
-      [ -f "$OUT/$seg" ] || curl -sf "$BASE/$seg" -o "$OUT/$seg" || rm -f "$OUT/$seg"
-    done
-  fi
-  sleep 0.5
-done
+  end=$(( $(date +%s) + POLL ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    if curl -sf "$BASE/stream.m3u8" -o "$OUT/latest.m3u8"; then
+      for seg in $(grep -v '^#' "$OUT/latest.m3u8"); do
+        [ -f "$OUT/$seg" ] || curl -sf "$BASE/$seg" -o "$OUT/$seg" || rm -f "$OUT/$seg"
+      done
+    fi
+    sleep 0.5
+  done
+fi
 [ -f "$OUT/latest.m3u8" ] || fail "no playlist captured"
 echo "--- playlist ---"; cat "$OUT/latest.m3u8"
 
@@ -47,7 +53,7 @@ echo "decoded frames: $FRAMES (minimum $MIN_FRAMES)"
 
 # 3. PTS must never go backwards (no B-frames, so packet order is presentation order).
 ffprobe -v error -allowed_extensions ALL -select_streams v:0 -show_entries packet=pts -of default=nw=1:nk=1 "$OUT/vod.m3u8" > "$OUT/pts.txt"
-awk 'NR>1 && $1 < prev { bad=NR } { prev=$1 } END { if (bad) { print "PTS went backwards at packet " bad; exit 1 } }' "$OUT/pts.txt" || fail "PTS regression"
 [ -s "$OUT/pts.txt" ] || fail "no packets found"
+awk 'NR>1 && $1 < prev { bad=NR } { prev=$1 } END { if (bad) { print "PTS went backwards at packet " bad; exit 1 } }' "$OUT/pts.txt" || fail "PTS regression"
 
 echo "HARNESS PASS"
