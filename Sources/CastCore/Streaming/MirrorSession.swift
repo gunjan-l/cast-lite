@@ -66,7 +66,8 @@ public struct MirrorSessionStatus: Sendable, Equatable {
 }
 
 /// Owns the lifecycle of one broadcast on top of `MirrorStream`. Platform-neutral; the single test seam.
-/// For `.cast` targets the HTTP server and stream start first, then the Cast session; Cast failures never stop the server.
+/// For `.cast` targets the HTTP server and stream start first; the Cast session starts in the background once the
+/// first HLS segment exists. Cast failures never stop the server and never fail `start`.
 public final class MirrorSession: @unchecked Sendable {
     public typealias DiscoveryFallback = @Sendable () async -> [DiscoveredDevice]
     public typealias CastTransportFactory = @Sendable (DiscoveredDevice) -> CastTransport
@@ -88,6 +89,7 @@ public final class MirrorSession: @unchecked Sendable {
     private var quality: MirrorQuality = .high
     private var castPhase: CastPhase?
     private var coordinator: CastSessionCoordinator?
+    private var castTask: Task<Void, Never>?
 
     public init(
         port: UInt16 = 8080,
@@ -132,8 +134,13 @@ public final class MirrorSession: @unchecked Sendable {
             }
             let url = NetworkInterfaceHelper.formatStreamURL(host: host, port: port, path: "view")
             lock.lock(); streamURL = url; lock.unlock()
-            if case .cast(let device) = resolvedTarget {
-                await cast(to: device, streamURL: "http://\(host):\(port)/stream.m3u8")
+            if case .cast(let device) = resolvedTarget, castTransportFactory != nil {
+                let streamURL = "http://\(host):\(port)/stream.m3u8"
+                let task = Task<Void, Never> { [weak self] in
+                    guard let self else { return }
+                    await self.cast(to: device, streamURL: streamURL)
+                }
+                lock.lock(); castTask = task; lock.unlock()
             }
             return url
         } catch {
@@ -158,24 +165,66 @@ public final class MirrorSession: @unchecked Sendable {
         if wasStarted { ended = true }
         let coordinator = self.coordinator
         self.coordinator = nil
+        let task = castTask
         lock.unlock()
+        task?.cancel()
         if let coordinator {
             await coordinator.setOnPhaseChanged(nil)
-            try? await coordinator.stop()
-            lock.lock()
-            if wasStarted { castPhase = .ended("stopped") }
-            lock.unlock()
+            do {
+                try await coordinator.stop()
+                lock.lock()
+                if wasStarted { castPhase = .ended("stopped") }
+                lock.unlock()
+            } catch {
+                let failure = Self.castFailure(from: error)
+                lock.lock()
+                castPhase = .failed(failure)
+                lastError = failure.message
+                lock.unlock()
+            }
         }
         await stream.stop()
     }
 
+    /// Waits for the background Cast task to finish (playing, failed, or cancelled by `stop`). For tests.
+    func awaitCastSettled() async {
+        lock.lock(); let task = castTask; lock.unlock()
+        await task?.value
+    }
+
     /// Never throws: a Cast failure is recorded in `castPhase` and `lastError` while HTTP keeps serving.
+    /// Waits for the first segment so the TV finds `/stream.m3u8` when it fetches it after LOAD.
     private func cast(to device: DiscoveredDevice, streamURL: String) async {
         guard let factory = castTransportFactory else { return }
+        while stream.status().segmentCount == 0 {
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
         let coordinator = CastSessionCoordinator(transportFactory: factory)
-        lock.lock(); self.coordinator = coordinator; castPhase = .idle; lock.unlock()
+        lock.lock()
+        if Task.isCancelled || ended {
+            lock.unlock()
+            return
+        }
+        self.coordinator = coordinator
+        castPhase = .idle
+        lock.unlock()
         await coordinator.setOnPhaseChanged { [weak self] phase in self?.castPhaseChanged(phase) }
-        try? await coordinator.castMedia(url: streamURL, to: device, title: "Screen Mirror")
+        do {
+            try await coordinator.castMedia(url: streamURL, to: device, title: "Screen Mirror")
+        } catch {
+            let failure = Self.castFailure(from: error)
+            lock.lock()
+            if !ended {
+                castPhase = .failed(failure)
+                lastError = failure.message
+            }
+            lock.unlock()
+        }
+    }
+
+    private static func castFailure(from error: Error) -> CastFailure {
+        (error as? CastFailure) ?? .connectionFailed(error.localizedDescription)
     }
 
     private func castPhaseChanged(_ phase: CastPhase) {

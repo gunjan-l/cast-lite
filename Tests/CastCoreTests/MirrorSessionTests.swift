@@ -206,6 +206,8 @@ final class MirrorSessionTests: XCTestCase {
         let receiver = Receiver()
         let session = castSession(receiver)
         _ = try await session.start(handoff: MirrorHandoff(selection: .device(tv("chosen")), quality: .high))
+        feedTwoSegments(session)
+        await session.awaitCastSettled()
 
         let port = session.status().port
         XCTAssertFalse(castPayloads(receiver, namespace: CastNamespaces.connection, type: "CONNECT").isEmpty)
@@ -222,6 +224,8 @@ final class MirrorSessionTests: XCTestCase {
         let receiver = Receiver()
         let session = castSession(receiver, discovered: [tv("only")])
         _ = try await session.start(handoff: nil)
+        feedTwoSegments(session)
+        await session.awaitCastSettled()
 
         XCTAssertEqual(castPayloads(receiver, namespace: CastNamespaces.media, type: "LOAD").count, 1)
         XCTAssertEqual(session.status().castPhase, .playing)
@@ -233,6 +237,8 @@ final class MirrorSessionTests: XCTestCase {
         receiver.loadBehavior = .loadFailed("bad stream")
         let session = castSession(receiver)
         _ = try await session.start(handoff: MirrorHandoff(selection: .device(tv("chosen")), quality: .high))
+        feedTwoSegments(session)
+        await session.awaitCastSettled()
 
         let status = session.status()
         XCTAssertEqual(status.castPhase, .failed(.loadFailed("bad stream")))
@@ -244,10 +250,42 @@ final class MirrorSessionTests: XCTestCase {
         await session.stop()
     }
 
+    func testStartReturnsImmediatelyAndLoadWaitsForFirstSegment() async throws {
+        let receiver = Receiver()
+        let session = castSession(receiver)
+        let url = try await session.start(handoff: MirrorHandoff(selection: .device(tv("chosen")), quality: .high))
+
+        // start() returned with the viewer URL while Cast is still waiting for the first segment.
+        XCTAssertTrue(url.hasSuffix("/view"))
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertEqual(session.status().segmentCount, 0)
+        XCTAssertTrue(receiver.sentMessages.isEmpty, "no Cast traffic (CONNECT/LAUNCH/LOAD) before the playlist exists")
+        XCTAssertNotEqual(session.status().castPhase, .playing)
+
+        feedTwoSegments(session)
+        await session.awaitCastSettled()
+
+        XCTAssertEqual(castPayloads(receiver, namespace: CastNamespaces.media, type: "LOAD").count, 1)
+        XCTAssertEqual(session.status().castPhase, .playing)
+        await session.stop()
+    }
+
+    func testStopBeforeFirstSegmentNeverSendsLoad() async throws {
+        let receiver = Receiver()
+        let session = castSession(receiver)
+        _ = try await session.start(handoff: MirrorHandoff(selection: .device(tv("chosen")), quality: .high))
+        await session.stop()
+        await session.awaitCastSettled()
+
+        XCTAssertTrue(castPayloads(receiver, namespace: CastNamespaces.media, type: "LOAD").isEmpty)
+    }
+
     func testStopSendsMediaStopAndClosesReceiverApp() async throws {
         let receiver = Receiver()
         let session = castSession(receiver)
         _ = try await session.start(handoff: MirrorHandoff(selection: .device(tv("chosen")), quality: .high))
+        feedTwoSegments(session)
+        await session.awaitCastSettled()
         let port = session.status().port
 
         await session.stop()
