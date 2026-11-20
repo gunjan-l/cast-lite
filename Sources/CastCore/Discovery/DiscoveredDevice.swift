@@ -60,6 +60,14 @@ public struct DiscoveredDevice: Identifiable, Hashable, Sendable, Equatable {
         self.lastSeen = lastSeen
     }
 
+    public static func == (lhs: DiscoveredDevice, rhs: DiscoveredDevice) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+
     public var formattedHost: String {
         (ipAddress.contains(":") && !ipAddress.hasPrefix("[")) ? "[\(ipAddress)]" : ipAddress
     }

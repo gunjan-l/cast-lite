@@ -12,6 +12,7 @@ public final class CastAppState: ObservableObject {
     public let subscriptionManager: SubscriptionManager
 
     private var selection = DeviceSelection()
+    private let selectionController: DeviceSelectionController
 
     @Published public var connectionState: CastConnectionState = .disconnected
     @Published public var selectedDevice: DiscoveredDevice? = nil
@@ -37,6 +38,9 @@ public final class CastAppState: ObservableObject {
         self.networkHelper = networkHelper
         self.discoveryEngine = discoveryEngine
         self.subscriptionManager = subscriptionManager
+        self.selectionController = DeviceSelectionController { [weak self] device in
+            await self?.applySelection(device)
+        }
 
         setupStateObserver()
     }
@@ -81,6 +85,14 @@ public final class CastAppState: ObservableObject {
         // Selecting only records the choice; mirroring starts with the broadcast button.
         guard selection.select(device) == .changed else { return }
         self.selectedDevice = selection.device
+        selectionController.select(device)
+    }
+
+    private func applySelection(_ device: DiscoveredDevice?) async {
+        await coordinator.selectDevice(device)
+        if !Task.isCancelled {
+            await syncCoordinatorProperties()
+        }
     }
 
     public func connect(to device: DiscoveredDevice) {

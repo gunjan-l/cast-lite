@@ -373,6 +373,12 @@ public actor DiscoveryEngine {
     }
 
     public func addOrUpdateDevice(_ device: DiscoveredDevice) {
+        if device.type == .chromecast {
+            devices.removeAll { $0.type != .chromecast && $0.ipAddress == device.ipAddress }
+        } else if let cast = devices.firstIndex(where: { $0.type == .chromecast && $0.ipAddress == device.ipAddress }) {
+            devices[cast].lastSeen = device.lastSeen
+            return
+        }
         if let idx = devices.firstIndex(where: { $0.id == device.id }) {
             var updated = device
             if !devices[idx].name.isEmpty && devices[idx].name != "Smart TV" && updated.name == "Smart TV" {
@@ -394,10 +400,7 @@ public actor DiscoveryEngine {
         let now = Date()
         let countBefore = devices.count
         devices.removeAll { device in
-            if device.type == .chromecast {
-                return false
-            }
-            return now.timeIntervalSince(device.lastSeen) > offlineTimeout
+            now.timeIntervalSince(device.lastSeen) > offlineTimeout
         }
         if devices.count != countBefore {
             notifyDevicesChanged()
@@ -420,11 +423,18 @@ public actor DiscoveryEngine {
         }
 
         // Start Bonjour discovery for Chromecast
-        bonjourProvider?.startBrowsing { [weak self] device in
-            Task { [weak self] in
-                await self?.addOrUpdateDevice(device)
+        bonjourProvider?.startBrowsing(
+            onDeviceFound: { [weak self] device in
+                Task { [weak self] in
+                    await self?.addOrUpdateDevice(device)
+                }
+            },
+            onDeviceRemoved: { [weak self] id in
+                Task { [weak self] in
+                    await self?.removeDevice(id: id)
+                }
             }
-        }
+        )
 
         pruneTask = Task.detached { [weak self] in
             while !Task.isCancelled {
