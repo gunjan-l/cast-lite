@@ -1,4 +1,4 @@
-#if canImport(SwiftUI)
+﻿#if canImport(SwiftUI)
 import SwiftUI
 import CastCore
 
@@ -7,8 +7,8 @@ public struct MirrorView: View {
     @ObservedObject public var appState: CastAppState
     @State private var showSettings = false
     @State private var showPermissionModal = false
+    @State private var showDevicePicker = false
     @State private var hasGrantedLocalNetwork = false
-    @State private var selectedQuality = 0 // 0: Ultra-Low Latency, 1: High Definition (1080p)
 
     public init(appState: CastAppState? = nil, networkHelper: NetworkInterfaceHelper = NetworkInterfaceHelper()) {
         if let state = appState {
@@ -18,146 +18,30 @@ public struct MirrorView: View {
         }
     }
 
-    private var connectionStatusText: String {
-        guard appState.selectedDevice != nil else {
-            return "Tap to discover devices"
-        }
-        switch appState.connectionState {
-        case .disconnected:
-            return "Tap to discover devices"
-        case .connecting:
-            return "Connecting..."
-        case .ready:
-            return "Ready to Cast"
-        case .streaming:
-            return "Streaming Active"
-        case .error(let message):
-            return message
-        }
-    }
-
-    private var connectionStatusDotColor: Color {
-        guard appState.selectedDevice != nil else {
-            return Color.gray
-        }
-        switch appState.connectionState {
-        case .disconnected:
-            return Color.gray
-        case .connecting:
-            return Color.orange
-        case .ready:
-            return Color.blue
-        case .streaming:
-            return Color.green
-        case .error:
-            return Color.red
-        }
+    private var status: StatusModel {
+        StatusPresentation.status(for: StatusInput(
+            connectionState: appState.connectionState,
+            isScanning: appState.isScanning,
+            isReconnecting: appState.isReconnecting,
+            selectedDeviceName: appState.selectedDevice?.name,
+            errorMessage: appState.errorMessage,
+            localNetworkDeclined: false
+        ))
     }
 
     public var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
-                // Connection bar with selected device
-                Button(action: {
-                    if !hasGrantedLocalNetwork {
-                        showPermissionModal = true
-                    }
-                }) {
-                    HStack {
-                        Image(systemName: appState.selectedDevice?.type.systemIcon ?? "tv")
-                            .foregroundColor(.blue)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(appState.selectedDevice?.name ?? "No TV Selected")
-                                .font(.subheadline.bold())
-                                .foregroundColor(.primary)
-                            Text(connectionStatusText)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        Spacer()
-                        Circle()
-                            .fill(connectionStatusDotColor)
-                            .frame(width: 8, height: 8)
-                    }
-                    .padding()
-                    .background(Color(.systemGray6))
-                    .cornerRadius(10)
-                }
-                .padding(.horizontal)
-
-                // Error banner (e.g. "TV disconnected. Streaming stopped.")
-                if let error = appState.errorMessage {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.red)
-                        Text(error)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                        Spacer()
-                    }
-                    .padding(10)
-                    .background(Color.red.opacity(0.12))
-                    .cornerRadius(8)
-                    .padding(.horizontal)
-                }
-
-                // Mirror control card
-                VStack(spacing: 14) {
-                    Image(systemName: "display.and.arrow.down")
-                        .font(.system(size: 44))
-                        .foregroundColor(.blue)
-
-                    Text("Universal Screen Mirror")
-                        .font(.title3.bold())
-
-                    // Latency / Resolution mode picker
-                    Picker("Streaming Mode", selection: $selectedQuality) {
-                        Text("Low Latency (Gaming/Live)").tag(0)
-                        Text("HD 1080p (Presentation)").tag(1)
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal)
-
+            List {
+                statusSection
+                Section {
+                    tvRow
                     if appState.isStreaming && !appState.streamURL.isEmpty {
-                        VStack(spacing: 4) {
-                            Text("Open on PC, Mac, or Smart TV Browser:")
-                                .font(.caption.bold())
-                                .foregroundColor(.secondary)
-                            Text(appState.streamURL)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundColor(.blue)
-                                .padding(6)
-                                .background(Color(.systemGray6))
-                                .cornerRadius(6)
-                        }
+                        LabeledContent("Open in a browser", value: appState.streamURL)
+                            .textSelection(.disabled)
                     }
-
-                    // System Broadcast Picker button
-                    HStack {
-                        Text("iOS Screen Mirror:")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        BroadcastPickerView(preferredExtension: "com.castlite.app.broadcast")
-                    }
-                    .padding(.horizontal)
                 }
-                .padding(.vertical, 4)
-
-                // Device selector list
-                DeviceSelectorView(
-                    selectedDevice: Binding(
-                        get: { appState.selectedDevice },
-                        set: { newDev in
-                            appState.selectDevice(newDev)
-                        }
-                    ),
-                    devices: appState.discoveredDevices,
-                    isScanning: appState.isScanning,
-                    onRefresh: {
-                        appState.refreshDevices()
-                    }
-                )
             }
+            .safeAreaInset(edge: .bottom) { broadcastBar }
             .navigationTitle("Cast-Lite")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -173,17 +57,108 @@ public struct MirrorView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsView()
             }
+            .sheet(isPresented: $showDevicePicker) {
+                NavigationStack {
+                    DeviceSelectorView(
+                        selectedDevice: Binding(
+                            get: { appState.selectedDevice },
+                            set: { newDev in
+                                appState.selectDevice(newDev)
+                                if newDev != nil { showDevicePicker = false }
+                            }
+                        ),
+                        devices: appState.discoveredDevices,
+                        isScanning: appState.isScanning,
+                        onRefresh: { appState.refreshDevices() }
+                    )
+                    .navigationTitle("Choose a TV")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showDevicePicker = false }
+                        }
+                    }
+                }
+            }
             .sheet(isPresented: $showPermissionModal) {
                 LocalNetworkPermissionModal(isPresented: $showPermissionModal) {
                     hasGrantedLocalNetwork = true
                     appState.refreshDevices()
                 }
             }
-
         }
         .onAppear {
             appState.startDiscovery()
         }
     }
+
+    private var statusSection: some View {
+        Section {
+            VStack(spacing: 8) {
+                Image(systemName: status.symbol)
+                    .font(.largeTitle)
+                    .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
+                Text(status.title)
+                    .font(.title2.bold())
+                Text(status.subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                if let errorText = status.errorText {
+                    Label(errorText, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.leading)
+                        .padding(.top, 4)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var tvRow: some View {
+        Button {
+            if hasGrantedLocalNetwork {
+                showDevicePicker = true
+            } else {
+                showPermissionModal = true
+            }
+        } label: {
+            HStack {
+                Image(systemName: appState.selectedDevice?.type.systemIcon ?? "tv")
+                    .foregroundStyle(.tint)
+                Text(appState.selectedDevice?.name ?? "Choose a TV")
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.bold())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var broadcastBar: some View {
+        HStack {
+            Text("Start Mirroring")
+                .font(.headline)
+            Spacer()
+            BroadcastPickerView(preferredExtension: "com.castlite.app.broadcast")
+                .frame(width: 44, height: 44)
+        }
+        .padding()
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .disabled(appState.selectedDevice == nil)
+    }
 }
+
+#if DEBUG
+#Preview("Idle") { MirrorView(appState: .preview(.idle)) }
+#Preview("Scanning") { MirrorView(appState: .preview(.scanning)) }
+#Preview("Streaming") { MirrorView(appState: .preview(.streaming)) }
+#Preview("Error") { MirrorView(appState: .preview(.error)) }
+#endif
 #endif
